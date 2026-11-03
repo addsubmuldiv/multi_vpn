@@ -11,17 +11,31 @@ from . import __version__
 class Signals(QObject):
     message=Signal(str,str,dict)
 
+class PasswordInput(QWidget):
+    def __init__(self,password='',parent=None):
+        super().__init__(parent);layout=QHBoxLayout(self);layout.setContentsMargins(0,0,0,0)
+        self.edit=QLineEdit(password);self.edit.setEchoMode(QLineEdit.Password)
+        self.show_password=QCheckBox('显示密码')
+        self.show_password.toggled.connect(lambda show:self.edit.setEchoMode(QLineEdit.Normal if show else QLineEdit.Password))
+        layout.addWidget(self.edit,1);layout.addWidget(self.show_password)
+    def text(self):return self.edit.text()
+
+def password_prompt(parent,title,label):
+    dialog=QDialog(parent);dialog.setWindowTitle(title);layout=QFormLayout(dialog)
+    password=PasswordInput();layout.addRow(label,password)
+    buttons=QDialogButtonBox(QDialogButtonBox.Ok|QDialogButtonBox.Cancel)
+    buttons.accepted.connect(dialog.accept);buttons.rejected.connect(dialog.reject);layout.addRow(buttons)
+    if dialog.exec()!=QDialog.Accepted:return '',False
+    return password.text(),True
+
 class ProfileDialog(QDialog):
     def __init__(self,profile,password,parent):
         super().__init__(parent);self.setWindowTitle('连接配置');self.resize(450,330)
         self.profile=dataclasses.replace(profile);layout=QFormLayout(self)
         self.name=QLineEdit(profile.name);self.host=QLineEdit(profile.host)
         self.port=QSpinBox();self.port.setRange(1,65535);self.port.setValue(profile.port)
-        self.username=QLineEdit(profile.username);self.password=QLineEdit(password);self.password.setEchoMode(QLineEdit.Password)
-        self.remember=QCheckBox('在系统凭据库中保存密码');self.remember.setChecked(bool(password))
-        if sys.platform=='darwin' and os.geteuid()==0:
-            self.remember.setChecked(False);self.remember.setEnabled(False)
-            self.remember.setText('本版 macOS 密码仅保留在本次连接中')
+        self.username=QLineEdit(profile.username);self.password=PasswordInput(password)
+        self.remember=QCheckBox('保存密码');self.remember.setChecked(bool(password))
         for title,w in [('名称',self.name),('VPN 网关',self.host),('端口',self.port),('账号',self.username),('密码',self.password)]:layout.addRow(title,w)
         layout.addRow(self.remember)
         self.buttons=QDialogButtonBox(QDialogButtonBox.Save|QDialogButtonBox.Cancel)
@@ -48,7 +62,7 @@ class Window(QMainWindow):
         if sys.platform=='win32' and not ctypes.windll.shell32.IsUserAnAdmin():
             self.permission.setText('创建系统网卡需要管理员权限。')
             elevate=QPushButton('以管理员身份重新启动');elevate.clicked.connect(self.elevate);outer.addWidget(elevate)
-        elif sys.platform=='darwin' and os.geteuid()!=0:self.permission.setText('请通过项目的 macOS 管理员启动脚本运行，以创建系统 utun 网卡。')
+        elif sys.platform=='darwin' and os.geteuid()!=0:self.permission.setText('连接时将请求管理员授权以创建系统网卡。')
         split=QSplitter();outer.addWidget(split,1)
         left=QWidget();ll=QVBoxLayout(left);self.list=QListWidget();self.list.currentRowChanged.connect(self.refresh);ll.addWidget(self.list)
         actions=QHBoxLayout();ll.addLayout(actions)
@@ -129,7 +143,7 @@ class Window(QMainWindow):
         if not p or self.running(p):return
         password=self.password(p)
         if not password:
-            password,ok=QInputDialog.getText(self,'VPN 密码',p.username,QLineEdit.Password)
+            password,ok=password_prompt(self,'VPN 密码',p.username)
             if not ok:return
         self.log_lines[p.id]=[];self.details.pop(p.id,None)
         session=Session(dataclasses.replace(p),password,self.registry,self.signals.message.emit)
@@ -143,7 +157,7 @@ class Window(QMainWindow):
         if event=='state':self.states[id]=(data['state'],data['text'])
         elif event=='connected':self.details[id]=data
         elif event=='sms':
-            code,ok=QInputDialog.getText(self,'短信验证',p.name+'：输入本次新收到的验证码',QLineEdit.Password)
+            code,ok=QInputDialog.getText(self,'短信验证',p.name+'：输入本次新收到的验证码',QLineEdit.Normal)
             if ok:self.sessions[id].answer('sms',code)
             else:self.sessions[id].stop()
         elif event=='certificate':
@@ -182,12 +196,6 @@ def main():
     app=QApplication([sys.argv[0],*qt_args]);app.setApplicationName('MultiVPN');app.setApplicationVersion(__version__)
     from PySide6.QtGui import QIcon
     app.setWindowIcon(QIcon(str(resource_root()/'assets/icon.png')))
-    if sys.platform=='darwin' and getattr(sys,'frozen',False) and os.geteuid()!=0:
-        from .model import config_dir
-        from .runtime import launch_macos_admin
-        try:launch_macos_admin(config_dir())
-        except RuntimeError as exc:QMessageBox.warning(None,'启动未完成',str(exc))
-        return
     app.setStyle('Fusion');app.setStyleSheet('''
         QWidget { font-size: 14px; } QMainWindow { background: #f4f6fa; }
         QLabel#title { font-size: 28px; font-weight: 700; color: #17243a; }
