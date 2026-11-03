@@ -5,7 +5,7 @@ VERSION="${1:-0.1.0}"
 test "$(uname -m)" = arm64
 python scripts/build_app.py --version "$VERSION"
 dist/MultiVPN.app/Contents/MacOS/MultiVPN --self-test
-lipo -verify_arch arm64 dist/MultiVPN.app/Contents/MacOS/MultiVPN
+lipo dist/MultiVPN.app/Contents/MacOS/MultiVPN -verify_arch arm64
 codesign --verify --deep --strict dist/MultiVPN.app
 mkdir -p dist/installers build/pkg-root/Applications
 ditto dist/MultiVPN.app build/pkg-root/Applications/MultiVPN.app

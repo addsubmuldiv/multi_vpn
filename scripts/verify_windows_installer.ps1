@@ -11,7 +11,8 @@ try {
     $desktopLink = Join-Path ([Environment]::GetFolderPath('CommonDesktopDirectory')) 'Multi VPN.lnk'
     if (-not (Test-Path $desktopLink)) { throw 'Desktop shortcut missing' }
     $shortcut = (New-Object -ComObject WScript.Shell).CreateShortcut($desktopLink)
-    if ($shortcut.TargetPath -ne "$destination\MultiVPN.exe") { throw 'Shortcut target incorrect' }
+    python -c 'import os,sys; sys.exit(not os.path.samefile(sys.argv[1],sys.argv[2]))' $shortcut.TargetPath "$destination\MultiVPN.exe"
+    if ($LASTEXITCODE -ne 0) { throw 'Shortcut target incorrect' }
     Run-Checked "$destination/MultiVPN.exe" '--self-test'
 } finally {
     Run-Checked "$destination/unins000.exe" '/VERYSILENT /SUPPRESSMSGBOXES /NORESTART'

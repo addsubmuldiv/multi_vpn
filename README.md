@@ -2,7 +2,7 @@
 
 <img src="assets/icon.png" width="112" alt="Multi VPN icon">
 
-Python + Qt 编写的独立 UniVPN SSL 多连接客户端。每条连接使用独立会话、系统网卡和内网路由，其他软件可直接使用内网 IP，无须设置代理。
+Python + Qt 编写的独立 SSL VPN 多连接桌面工具，主要用于个人与小范围团队的授权内网访问。每条连接使用独立会话、系统网卡和内网路由，其他软件可直接使用内网 IP，无须设置代理。本项目与任何设备厂商无隶属或背书关系。
 
 ## 下载和安装
 
@@ -10,9 +10,9 @@ Python + Qt 编写的独立 UniVPN SSL 多连接客户端。每条连接使用�
 
 | 系统 | 文件 | 安装方式 |
 | --- | --- | --- |
-| Windows x64 | `MultiVPN-0.1.0-windows-x64-setup.exe` | 安装向导，自动创建桌面和开始菜单快捷方式，支持卸载 |
-| macOS Apple Silicon | `MultiVPN-0.1.0-macos-arm64.pkg` | 安装向导，安装到「应用程序」 |
-| macOS Apple Silicon | `MultiVPN-0.1.0-macos-arm64.dmg` | 将应用拖到 Applications |
+| Windows x64 | `MultiVPN-0.1.1-windows-x64-setup.exe` | 安装向导，自动创建桌面和开始菜单快捷方式，支持卸载 |
+| macOS Apple Silicon | `MultiVPN-0.1.1-macos-arm64.pkg` | 安装向导，安装到「应用程序」 |
+| macOS Apple Silicon | `MultiVPN-0.1.1-macos-arm64.dmg` | 将应用拖到 Applications |
 
 应用创建系统网卡需要管理员授权。macOS 启动时由系统弹出授权提示，程序不收集系统密码。初版安装包没有商业代码签名或 Apple 公证，系统可能提示开发者未验证；有签名和公证要求的环境请等待后续签名版本。
 
@@ -29,7 +29,7 @@ Python + Qt 编写的独立 UniVPN SSL 多连接客户端。每条连接使用�
 
 ## 支持范围和验证情况
 
-支持 UniVPN SSL 的 legacy 和 V1 协议、IPv4 内网分流。不是通用的 OpenVPN、WireGuard 或 IPSec 客户端。
+目前实现两种特定 SSL 网关报文格式和 IPv4 内网分流，兼容范围以实测为准，不是通用的 OpenVPN、WireGuard 或 IPSec 客户端。请仅使用本人或组织授权的账号与网关；程序仍需正常账号认证及网关要求的二次验证。
 
 Windows 已完成真实网关端到端验收：独立认证、系统网卡和目标路由、普通 socket 读取 SSH banner、系统 SSH 工具完成公钥交换、断开清理。没有登录远程主机或执行远程命令。
 
