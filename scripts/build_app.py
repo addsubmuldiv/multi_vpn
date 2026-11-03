@@ -4,10 +4,13 @@ from pathlib import Path
 
 root=Path(__file__).resolve().parents[1]
 parser=argparse.ArgumentParser();parser.add_argument('--version',default='0.1.0');args=parser.parse_args()
+subprocess.run([sys.executable,str(root/'scripts/collect_licenses.py')],check=True)
 command=[sys.executable,'-m','PyInstaller','--noconfirm','--clean','--windowed','--onedir',
          '--name','MultiVPN','--paths',str(root/'src'),
          '--collect-submodules','keyring.backends',
-         '--add-data',f'{root / "assets"}:assets']
+         '--add-data',f'{root / "assets"}:assets',
+         '--add-data',f'{root / "build/third-party-licenses"}:licenses',
+         '--add-data',f'{root / "THIRD_PARTY_NOTICES.md"}:.']
 if sys.platform=='win32':
     command+=['--icon',str(root/'assets/icon.ico'),'--uac-admin',
               '--add-binary',f'{root / "vendor/wintun.dll"}:vendor',
