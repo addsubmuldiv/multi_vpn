@@ -6,6 +6,7 @@ from PySide6.QtWidgets import (QApplication,QMainWindow,QWidget,QVBoxLayout,QHBo
 from .model import Profile,Store,RouteRegistry
 from .session import Session
 from .runtime import resource_root,relaunch_args
+from . import __version__
 
 class Signals(QObject):
     message=Signal(str,str,dict)
@@ -37,7 +38,7 @@ class ProfileDialog(QDialog):
 
 class Window(QMainWindow):
     def __init__(self):
-        super().__init__();self.setWindowTitle('Multi VPN');self.resize(1020,690)
+        super().__init__();self.setWindowTitle('Multi VPN · '+__version__);self.resize(1020,690)
         self.store=Store();self.profiles=self.store.load();self.sessions={};self.states={};self.details={};self.memory_passwords={}
         self.registry=RouteRegistry();self.signals=Signals();self.signals.message.connect(self.message)
         self._closing=False;root=QWidget();self.setCentralWidget(root);outer=QVBoxLayout(root)
@@ -174,7 +175,7 @@ def main():
         from .runtime import frozen_self_test
         sys.exit(frozen_self_test())
     if options.data_dir:os.environ['MULTIVPN_DATA_DIR']=options.data_dir
-    app=QApplication([sys.argv[0],*qt_args]);app.setApplicationName('MultiVPN')
+    app=QApplication([sys.argv[0],*qt_args]);app.setApplicationName('MultiVPN');app.setApplicationVersion(__version__)
     from PySide6.QtGui import QIcon
     app.setWindowIcon(QIcon(str(resource_root()/'assets/icon.png')))
     if sys.platform=='darwin' and getattr(sys,'frozen',False) and os.geteuid()!=0:

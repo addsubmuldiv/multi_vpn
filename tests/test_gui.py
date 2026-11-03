@@ -7,7 +7,7 @@ def test_gui_starts_without_network(tmp_path,monkeypatch):
     from multi_vpn.app import Window
     app=QApplication.instance() or QApplication([])
     window=Window();window.show();app.processEvents()
-    assert window.windowTitle()=='Multi VPN'
+    assert window.windowTitle().startswith('Multi VPN · ')
     assert not window.connect_button.isEnabled()
     window.close()
 
