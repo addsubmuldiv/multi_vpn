@@ -14,7 +14,11 @@ WizardStyle=modern
 PrivilegesRequired=admin
 ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
+#ifdef InstallerSmokeTest
+OutputDir=..\build\installer-smoke
+#else
 OutputDir=..\dist\installers
+#endif
 OutputBaseFilename=MultiVPN-{#AppVersion}-windows-x64-setup
 SetupIconFile=..\assets\icon.ico
 UninstallDisplayIcon={app}\MultiVPN.exe
@@ -34,4 +38,8 @@ Name: "{autoprograms}\Multi VPN"; Filename: "{app}\MultiVPN.exe"; WorkingDir: "{
 Name: "{autodesktop}\Multi VPN"; Filename: "{app}\MultiVPN.exe"; WorkingDir: "{app}"
 
 [Run]
-Filename: "{app}\MultiVPN.exe"; Description: "Launch Multi VPN"; Flags: nowait postinstall skipifsilent
+#ifdef InstallerSmokeTest
+Filename: "{app}\MultiVPN.exe"; Parameters: "--self-test --self-test-report ""{app}\postinstall-smoke.json"""; Flags: postinstall runascurrentuser
+#else
+Filename: "{app}\MultiVPN.exe"; WorkingDir: "{app}"; Description: "Launch Multi VPN"; Flags: nowait postinstall skipifsilent runascurrentuser
+#endif

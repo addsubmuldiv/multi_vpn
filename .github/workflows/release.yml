@@ -48,10 +48,14 @@ jobs:
           if ($process.ExitCode -ne 0) { throw 'Frozen smoke test failed' }
           & "${env:ProgramFiles(x86)}/Inno Setup 6/ISCC.exe" "/DAppVersion=$env:APP_VERSION" packaging/windows.iss
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          & "${env:ProgramFiles(x86)}/Inno Setup 6/ISCC.exe" /DInstallerSmokeTest "/DAppVersion=$env:APP_VERSION" packaging/windows.iss
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
       - name: Verify Windows installation and desktop shortcut
         if: runner.os == 'Windows'
         shell: pwsh
-        run: ./scripts/verify_windows_installer.ps1
+        run: |
+          ./scripts/verify_windows_installer.ps1
+          ./scripts/verify_windows_installer.ps1 -PostinstallSmoke
       - name: Apple Silicon app and installers
         if: runner.os == 'macOS'
         run: bash packaging/build_macos.sh "$APP_VERSION"

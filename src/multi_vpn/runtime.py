@@ -19,7 +19,7 @@ def launch_macos_admin(data_dir):
                           capture_output=True,text=True)
     if result.returncode:raise RuntimeError('未取得管理员授权，连接需要创建系统网卡。')
 
-def frozen_self_test():
+def frozen_self_test(report=None):
     from PySide6.QtWidgets import QApplication
     from . import wire,protocol,session
     import keyring
@@ -33,4 +33,19 @@ def frozen_self_test():
     elif sys.platform=='darwin':
         from .platforms import macos
         import keyring.backends.macOS
+    import tempfile
+    from PySide6.QtCore import QTimer
+    from .app import Window
+    previous=os.environ.get('MULTIVPN_DATA_DIR')
+    with tempfile.TemporaryDirectory(prefix='multivpn-test-') as directory:
+        os.environ['MULTIVPN_DATA_DIR']=directory
+        app=QApplication.instance() or QApplication([])
+        window=Window();window.show();app.processEvents()
+        assert window.isVisible() and window.list.count()==0
+        QTimer.singleShot(100,app.quit);app.exec();window.close();app.processEvents()
+    if previous is None:os.environ.pop('MULTIVPN_DATA_DIR',None)
+    else:os.environ['MULTIVPN_DATA_DIR']=previous
+    if report:
+        import ctypes
+        Path(report).write_text(json.dumps({'gui_started':True,'admin':bool(ctypes.windll.shell32.IsUserAnAdmin())}),encoding='utf-8')
     return 0

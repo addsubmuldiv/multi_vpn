@@ -150,11 +150,14 @@ class Window(QMainWindow):
             ok=QMessageBox.question(self,'首次连接确认',f"{p.host}:{p.port}\n证书 SHA256：\n{data['fingerprint']}\n确认信任并保存此网关证书？")==QMessageBox.Yes
             self.sessions[id].answer('certificate',ok)
         elif event=='pin_saved':p.pin=data['fingerprint'];self.store.save(self.profiles)
-        elif event=='error':QMessageBox.warning(self,p.name,data['message'])
+        elif event=='error':pass
         if event!='traffic':
             text=data.get('text') or data.get('message') or {'connected':'系统网卡及内网路由安装完成','sms':'等待短信验证','pin_saved':'网关证书已保存'}.get(event,event)
             self.log_lines.setdefault(id,[]).append(time.strftime('%H:%M:%S')+'  '+text)
         self.refresh()
+        if event=='error':
+            dialog=QMessageBox(QMessageBox.Warning,p.name,data['message'],QMessageBox.Ok,self)
+            dialog.setAttribute(Qt.WA_DeleteOnClose);dialog.open()
     def elevate(self):
         import subprocess
         args=subprocess.list2cmdline(relaunch_args(self.store.path.parent))
@@ -170,10 +173,11 @@ class Window(QMainWindow):
 def main():
     import argparse
     parser=argparse.ArgumentParser();parser.add_argument('--data-dir');parser.add_argument('--self-test',action='store_true')
+    parser.add_argument('--self-test-report')
     options,qt_args=parser.parse_known_args()
     if options.self_test:
         from .runtime import frozen_self_test
-        sys.exit(frozen_self_test())
+        sys.exit(frozen_self_test(options.self_test_report))
     if options.data_dir:os.environ['MULTIVPN_DATA_DIR']=options.data_dir
     app=QApplication([sys.argv[0],*qt_args]);app.setApplicationName('MultiVPN');app.setApplicationVersion(__version__)
     from PySide6.QtGui import QIcon

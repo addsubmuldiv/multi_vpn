@@ -1,5 +1,7 @@
+param([switch]$PostinstallSmoke)
 $ErrorActionPreference = 'Stop'
 $installer = Get-ChildItem "$PSScriptRoot/../dist/installers/*windows-x64-setup.exe" | Select-Object -First 1
+if ($PostinstallSmoke) { $installer=Get-ChildItem "$PSScriptRoot/../build/installer-smoke/*setup.exe" | Select-Object -First 1 }
 $destination = Join-Path $env:TEMP ('MultiVPN-package-test-' + [guid]::NewGuid().ToString('N'))
 function Run-Checked($File, $Arguments) {
     $process = Start-Process -FilePath $File -ArgumentList $Arguments -Wait -PassThru
@@ -7,6 +9,11 @@ function Run-Checked($File, $Arguments) {
 }
 Run-Checked $installer.FullName "/VERYSILENT /SUPPRESSMSGBOXES /NORESTART /DIR=`"$destination`""
 try {
+    if ($PostinstallSmoke) {
+        $report=Get-Content "$destination/postinstall-smoke.json" -Raw | ConvertFrom-Json
+        if (-not $report.gui_started -or -not $report.admin) { throw 'Postinstall GUI did not start elevated' }
+        Write-Output 'Actual postinstall entry launched the GUI with administrative privileges.'
+    }
     if (-not (Test-Path "$destination/MultiVPN.exe")) { throw 'Installed executable missing' }
     $desktopLink = Join-Path ([Environment]::GetFolderPath('CommonDesktopDirectory')) 'Multi VPN.lnk'
     if (-not (Test-Path $desktopLink)) { throw 'Desktop shortcut missing' }

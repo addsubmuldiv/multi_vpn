@@ -3,6 +3,7 @@ import hashlib,ipaddress,queue,select,socket,ssl,struct,threading,time,uuid
 from . import protocol as p
 from .wire import encode_frame,read_frame,FrameReader,parse_vip,auth_v1,validate_ipv4
 from .platforms import create_adapter
+from .transport import TLSWriter
 
 class Cancelled(Exception):pass
 
@@ -113,21 +114,24 @@ class Session(threading.Thread):
                 except Exception:pass
             self.emit('state',state='disconnected',text='已断开');p.EVENT_SINK.reset(sink)
     def forward(self,control,data,protocol,uid,token):
-        for sock in set([control,data]):sock.settimeout(.05)
+        for sock in set([control,data]):sock.setblocking(False)
+        writers={s:TLSWriter(s) for s in set([control,data])}
         buffers={s:bytearray() for s in set([control,data])}
         heartbeat=time.monotonic()+8;stats=time.monotonic();counter=0
         while not self.cancel.is_set():
             for _ in range(32):
+                if writers[data].size>=1024*1024:break
                 packet=self.adapter.read()
                 if packet is None:break
                 if not packet or packet[0]>>4!=4:continue
                 validate_ipv4(packet)
-                data.sendall(p.legacy_frame(2,packet,uid) if protocol=='legacy' else encode_frame(0x66,bytes(8)+packet));self.tx+=len(packet)
+                writers[data].enqueue(p.legacy_frame(2,packet,uid) if protocol=='legacy' else encode_frame(0x66,bytes(8)+packet));self.tx+=len(packet)
+            for writer in writers.values():writer.flush()
             ready,_,_=select.select(list(buffers),[],[],.005)
             for sock in buffers:
                 if sock not in ready and not sock.pending():continue
                 try:chunk=sock.recv(65536)
-                except (TimeoutError,ssl.SSLWantReadError):continue
+                except (TimeoutError,ssl.SSLWantReadError,ssl.SSLWantWriteError,BlockingIOError):continue
                 if not chunk:raise RuntimeError('网关关闭连接')
                 buf=buffers[sock];buf.extend(chunk)
                 while len(buf)>=(16 if protocol=='legacy' else 8):
@@ -147,7 +151,7 @@ class Session(threading.Thread):
             now=time.monotonic()
             if now>=heartbeat:
                 counter+=1
-                control.sendall(p.legacy_frame(7,user_id=uid) if protocol=='legacy' else encode_frame(6,token+struct.pack('!I',counter)))
-                if protocol=='v1':data.sendall(encode_frame(0x65))
+                writers[control].enqueue(p.legacy_frame(7,user_id=uid) if protocol=='legacy' else encode_frame(6,token+struct.pack('!I',counter)))
+                if protocol=='v1':writers[data].enqueue(encode_frame(0x65))
                 heartbeat=now+8
             if now-stats>=1:self.emit('traffic',tx=self.tx,rx=self.rx);stats=now
