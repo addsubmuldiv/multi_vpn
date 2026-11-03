@@ -11,6 +11,37 @@ def powershell(command):
     if result.returncode:raise RuntimeError(result.stderr.strip() or 'Windows 网络配置失败')
     return result.stdout.strip()
 
+def address_ready_script(index,vip,timeout=30):
+    """Check the assigned address, not unrelated APIPA/secondary addresses.
+
+    PowerShell comparison operators filter arrays. With the old code a list
+    containing Preferred AND Tentative passed the loop then failed the final
+    '-ne Preferred' check. Keep the selected address and its state scalar.
+    """
+    index=int(index);vip=str(ipaddress.IPv4Address(vip));timeout=max(0,int(timeout))
+    return f"""
+$deadline=(Get-Date).AddSeconds({timeout})
+$ready=$false
+$state='Missing'
+do {{
+    $target=Get-NetIPAddress -InterfaceIndex {index} -AddressFamily IPv4 -IPAddress '{vip}' -ErrorAction SilentlyContinue |
+        Where-Object {{ $_.IPAddress -eq '{vip}' }} | Select-Object -First 1
+    $state=if($null -eq $target){{'Missing'}}else{{[string]$target.AddressState}}
+    if($state -eq 'Preferred'){{ $ready=$true; break }}
+    if($state -eq 'Duplicate' -or (Get-Date) -ge $deadline){{ break }}
+    Start-Sleep -Milliseconds 200
+}} while($true)
+@{{ready=$ready;state=$state}} | ConvertTo-Json -Compress
+"""
+
+def require_address_ready(result,vip):
+    status=json.loads(result)
+    if status.get('ready') is True and status.get('state')=='Preferred':return
+    state=status.get('state','Unknown')
+    label={'Duplicate':'地址冲突','Tentative':'仍在确认地址','Invalid':'地址无效',
+           'Missing':'未找到网关分配的地址','Deprecated':'地址已弃用'}.get(state,state)
+    raise RuntimeError(f'虚拟 IP {vip} 尚未就绪：{label}。请检查网卡状态及是否存在重复地址；现有其他连接未被修改。')
+
 class WindowsAdapter:
     def __init__(self,name,vip,routes,dns=()):
         self.handle=None;self.session=None;self.index=None
@@ -51,8 +82,8 @@ class WindowsAdapter:
             if dns:
                 servers=','.join("'"+str(ipaddress.IPv4Address(x))+"'" for x in dns)
                 commands.append(f'Set-DnsClientServerAddress -InterfaceIndex {self.index} -ServerAddresses @({servers})')
-            commands.append(f"$deadline=(Get-Date).AddSeconds(12); do {{ $ip=Get-NetIPAddress -InterfaceIndex {self.index} -AddressFamily IPv4 -ErrorAction SilentlyContinue; if($ip.AddressState -eq 'Preferred'){{break}}; Start-Sleep -Milliseconds 200 }} while((Get-Date) -lt $deadline); if($ip.AddressState -ne 'Preferred'){{throw 'Virtual IP did not become usable'}}")
-            powershell(';'.join(commands))
+            commands.append(address_ready_script(self.index,vip))
+            require_address_ready(powershell(';'.join(commands)),vip)
         except BaseException:
             self.close();raise
     def read(self):
