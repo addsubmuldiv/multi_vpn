@@ -15,7 +15,7 @@ finally:
     for adapter in reversed(adapters):adapter.close()
 deadline=time.monotonic()+15
 while True:
-    present=powershell("Get-NetAdapter -Name '"+"','".join(names)+"' -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Name")
+    present=powershell("Get-NetAdapter | Where-Object { $_.Name -in @('"+"','".join(names)+"') } | Select-Object -ExpandProperty Name")
     if not present:break
     if time.monotonic()>=deadline:raise RuntimeError('Test adapter cleanup did not finish')
     time.sleep(.25)
