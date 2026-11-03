@@ -16,8 +16,9 @@ if sys.platform=='win32':
               '--add-binary',f'{root / "vendor/wintun.dll"}:vendor',
               '--add-data',f'{root / "vendor/WINTUN-LICENSE.txt"}:vendor']
 elif sys.platform=='darwin':
-    if platform.machine()!='arm64':raise RuntimeError('Build Apple Silicon release on native arm64')
-    command+=['--icon',str(root/'assets/icon.icns'),'--target-arch','arm64',
+    arch=platform.machine()
+    if arch not in ('arm64','x86_64'):raise RuntimeError('Unsupported macOS architecture: '+arch)
+    command+=['--icon',str(root/'assets/icon.icns'),'--target-arch',arch,
               '--osx-bundle-identifier','io.github.addsubmuldiv.multivpn']
 else:raise RuntimeError('Build on Windows or macOS')
 command.append(str(root/'scripts/frozen_entry.py'))

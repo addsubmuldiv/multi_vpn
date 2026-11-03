@@ -16,6 +16,8 @@ jobs:
             target: windows-x64
           - os: macos-15
             target: macos-arm64
+          - os: macos-15-intel
+            target: macos-x86_64
     runs-on: ${{ matrix.os }}
     timeout-minutes: 30
     env:
@@ -56,7 +58,7 @@ jobs:
         run: |
           ./scripts/verify_windows_installer.ps1
           ./scripts/verify_windows_installer.ps1 -PostinstallSmoke
-      - name: Apple Silicon app and installers
+      - name: macOS app and installers
         if: runner.os == 'macOS'
         run: bash packaging/build_macos.sh "$APP_VERSION"
       - uses: actions/upload-artifact@v4
