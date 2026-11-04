@@ -1,5 +1,16 @@
 # Changes
 
+## 0.2.0
+
+- Merge PR #1: keep the macOS Qt interface in the logged-in user session and
+  request administrator authorization only for the utun/routes helper.
+- Transfer the utun descriptor to the app and clean up routes when its helper
+  control connection closes; retain the Windows adapter/elevation flow.
+- Add optional password visibility, user Keychain support on macOS, and visible
+  SMS-code entry. This targets the root-session input/startup problems; actual
+  macOS launch, input methods and live VPN connectivity still need field testing.
+- Include all 0.1.8 long-running tunnel and diagnostic improvements.
+
 ## 0.1.8 — long-running tunnel reliability
 
 - Use TLS read/write readiness for retries and drain decrypted receive data in

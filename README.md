@@ -10,10 +10,10 @@ Python + Qt 编写的独立 SSL VPN 多连接桌面工具，主要用于个人�
 
 | 系统 | 文件 | 安装方式 |
 | --- | --- | --- |
-| Windows x64 | `MultiVPN-0.1.8-windows-x64-setup.exe` | 安装向导，自动创建桌面和开始菜单快捷方式，支持卸载 |
-| macOS Apple Silicon | `MultiVPN-0.1.8-macos-arm64.pkg` | 安装向导，安装到「应用程序」 |
-| macOS Intel | `MultiVPN-0.1.8-macos-x86_64.pkg` / `.dmg` | 安装向导或拖入 Applications；当前依赖要求 macOS 14+ |
-| macOS Apple Silicon | `MultiVPN-0.1.8-macos-arm64.dmg` | 将应用拖到 Applications |
+| Windows x64 | `MultiVPN-0.2.0-windows-x64-setup.exe` | 安装向导，自动创建桌面和开始菜单快捷方式，支持卸载 |
+| macOS Apple Silicon | `MultiVPN-0.2.0-macos-arm64.pkg` | 安装向导，安装到「应用程序」 |
+| macOS Intel | `MultiVPN-0.2.0-macos-x86_64.pkg` / `.dmg` | 安装向导或拖入 Applications；当前依赖要求 macOS 14+ |
+| macOS Apple Silicon | `MultiVPN-0.2.0-macos-arm64.dmg` | 将应用拖到 Applications |
 
 应用创建系统网卡需要管理员授权。macOS 连接时由系统弹出授权提示，程序不收集系统密码。初版安装包没有商业代码签名或 Apple 公证，系统可能提示开发者未验证；有签名和公证要求的环境请等待后续签名版本。
 
