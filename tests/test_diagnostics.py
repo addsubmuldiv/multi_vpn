@@ -7,6 +7,7 @@ def test_log_persists_only_safe_fields_and_rotates(tmp_path):
     log=EventLog(tmp_path,max_bytes=200,backups=2)
     for sequence in range(20):
         assert log.write('profile','traffic',{'tx':sequence,'password':'SECRET','token':'SECRET','message':'SECRET'})
+    log.close()
     files=list(tmp_path.glob('multi-vpn.log*'))
     assert 1<=len(files)<=3
     rows=[json.loads(line) for path in files for line in path.read_text(encoding='utf-8').splitlines()]

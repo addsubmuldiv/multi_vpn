@@ -1,5 +1,28 @@
 # Changes
 
+## 0.1.8 — long-running tunnel reliability
+
+- Use TLS read/write readiness for retries and drain decrypted receive data in
+  bounded batches. One session thread retains ownership of TLS sockets.
+- Expire adapter packets stuck for 60 seconds, outbound packets queued for
+  120 seconds, and incomplete frames stalled for 120 seconds. The existing
+  30-second no-send-progress deadline remains. Healthy idle connections have
+  no lifetime limit and are not periodically disconnected.
+- Distinguish incoming tunnel traffic from actual inner-network packets so
+  control heartbeats cannot hide a stalled data path.
+- Enable TCP_NODELAY and OS TCP keepalive, with supported platform-specific
+  keepalive tuning. Close tunnel sockets before bounded legacy logout I/O.
+- Write diagnostics on a separate bounded worker queue. Slow/full disks no
+  longer block the packet forwarding thread; dropped log events are counted.
+- Add a unique run identifier, queue ages, partial-frame size, data/control
+  receive ages and specific failure types to allowlisted diagnostics. Display
+  queued bytes, adapter retries and diagnostic losses in the desktop UI.
+- Add deterministic simulated 72-hour framing, repeated queue turnover,
+  fragmented input, TLS retry, slow-disk and control/data health regressions.
+  This does not replace real gateway soak or native macOS field testing.
+- Do not add automatic authentication retries, undocumented heartbeat claims,
+  credential retention, or changes to another active VPN connection.
+
 ## 0.1.7
 
 - Persist allowlisted diagnostic events and traffic/queue counters in UTF-8

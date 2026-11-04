@@ -3,7 +3,7 @@ import hashlib,ipaddress,queue,select,socket,ssl,struct,threading,time,uuid
 from . import protocol as p
 from .wire import encode_frame,read_frame,FrameReader,parse_vip,auth_v1,validate_ipv4
 from .platforms import create_adapter
-from .transport import TLSWriter,ReceiveQueue,ReceiveHealth
+from .transport import TLSWriter,ReceiveQueue,ReceiveHealth,TunnelReader
 
 class Cancelled(Exception):pass
 
@@ -30,7 +30,12 @@ class Session(threading.Thread):
         self.cancel=threading.Event();self.answers=queue.Queue();self.sockets=[]
         self.tx=0;self.rx=0;self.adapter=None
         self.event_log=event_log
+        self.run_id=uuid.uuid4().hex
+        self.metrics={}
     def emit(self,name,**data):
+        data['run_id']=self.run_id
+        if name=='traffic' and self.event_log:data['log_dropped']=self.event_log.dropped
+        if name=='traffic':self.metrics=data.copy()
         if self.event_log:self.event_log.write(self.profile.id,name,data)
         self.emit_cb(self.profile.id,name,data)
     def stop(self):self.cancel.set()
@@ -109,19 +114,21 @@ class Session(threading.Thread):
             if control:
                 try:control.sendall(p.legacy_frame(4,user_id=struct.unpack_from('!I',info,40)[0]) if protocol=='legacy' else encode_frame(5,token))
                 except Exception:pass
-            if info:
-                try:p.legacy_logout(self.profile.host,self.profile.port,self.profile.pin,info)
-                except Exception:pass
             for sock in self.sockets:
                 try:sock.close()
+                except Exception:pass
+            if info:
+                try:p.legacy_logout(self.profile.host,self.profile.port,self.profile.pin,info)
                 except Exception:pass
             self.emit('state',state='disconnected',text='已断开');p.EVENT_SINK.reset(sink)
     def forward(self,control,data,protocol,uid,token):
         for sock in set([control,data]):sock.setblocking(False)
         writers={s:TLSWriter(s) for s in set([control,data])}
-        buffers={s:bytearray() for s in set([control,data])}
+        readers={sock:TunnelReader(protocol) for sock in writers}
+        receive_wants_write=set()
         heartbeat=time.monotonic()+8;stats=time.monotonic();counter=0
         pending=ReceiveQueue();health=ReceiveHealth(stats);received=0
+        last_gateway=stats
         while not self.cancel.is_set():
             self.rx+=pending.flush(self.adapter)
             for _ in range(32):
@@ -132,38 +139,43 @@ class Session(threading.Thread):
                 validate_ipv4(packet)
                 health.sent(time.monotonic())
                 writers[data].enqueue(p.legacy_frame(2,packet,uid) if protocol=='legacy' else encode_frame(0x66,bytes(8)+packet));self.tx+=len(packet)
-            for writer in writers.values():writer.flush()
-            readable=[sock for sock in buffers if sock is not data or pending.size<1024*1024]
-            if readable:ready,_,_=select.select(readable,[],[],.005)
+            for writer in writers.values():
+                writer.check_timeout()
+                if writer.want is None:writer.flush()
+            for reader in readers.values():reader.check_timeout()
+            readable=[sock for sock in readers if sock is not data or pending.size<1024*1024]
+            read_wait=list(dict.fromkeys(readable+[sock for sock,writer in writers.items() if writer.want=='read']))
+            write_wait=[sock for sock,writer in writers.items() if writer.want=='write' or sock in receive_wants_write]
+            has_pending=any(sock.pending() for sock in readable)
+            if read_wait or write_wait:ready,writable,_=select.select(read_wait,write_wait,[],0 if has_pending else .005)
             else:self.cancel.wait(.005);ready=[]
+            if not read_wait and not write_wait:writable=[]
+            for sock,writer in writers.items():
+                retry_read=writer.want=='read' and (sock in ready or sock.pending())
+                retry_write=writer.want=='write' and sock in writable
+                if retry_read or retry_write:writer.flush()
             for sock in readable:
-                if sock not in ready and not sock.pending():continue
-                try:chunk=sock.recv(65536)
-                except (TimeoutError,ssl.SSLWantReadError,ssl.SSLWantWriteError,BlockingIOError):continue
-                if not chunk:raise RuntimeError('网关关闭连接')
-                health.received(time.monotonic())
-                buf=buffers[sock];buf.extend(chunk)
-                while len(buf)>=(16 if protocol=='legacy' else 8):
-                    head=16 if protocol=='legacy' else 8
-                    if protocol=='legacy':
-                        m1,m2,_,cmd,size=struct.unpack_from('!IIIHH',buf)
-                        if (m1,m2)!=(0xfefcefbe,0xc192a4d6):raise RuntimeError('无效的数据报头')
-                    else:
-                        magic,version,cmd,size=struct.unpack_from('!4sBBH',buf)
-                        if magic!=b'\xc1\x92\xa4\xd6' or version!=1:raise RuntimeError('无效的新版数据报头')
-                    if len(buf)<head+size:break
-                    payload=bytes(buf[head:head+size]);del buf[:head+size]
-                    if cmd==(2 if protocol=='legacy' else 0x66):
-                        packet=payload if protocol=='legacy' else payload[8:]
-                        validate_ipv4(packet);pending.enqueue(packet);received+=len(packet)
-                    elif cmd==(6 if protocol=='legacy' else 50):raise RuntimeError('网关终止了会话')
+                if sock not in ready and not sock.pending() and not (sock in receive_wants_write and sock in writable):continue
+                for batch in range(4):
+                    if sock is data and pending.size>=1024*1024:break
+                    try:chunk=sock.recv(65536)
+                    except ssl.SSLWantWriteError:receive_wants_write.add(sock);break
+                    except (TimeoutError,ssl.SSLWantReadError,BlockingIOError):receive_wants_write.discard(sock);break
+                    if not chunk:raise ConnectionError('网关关闭连接')
+                    receive_wants_write.discard(sock);last_gateway=time.monotonic()
+                    for cmd,payload in readers[sock].feed(chunk):
+                        if cmd==(2 if protocol=='legacy' else 0x66):
+                            packet=payload if protocol=='legacy' else payload[8:]
+                            validate_ipv4(packet);pending.enqueue(packet);received+=len(packet);health.received(time.monotonic())
+                        elif cmd==(6 if protocol=='legacy' else 50):raise RuntimeError('网关终止了会话')
+                    if not sock.pending():break
             now=time.monotonic()
             state=health.check(now)
-            if state:self.emit('state',state=state,text='已发出数据，但超过 30 秒未收到网关数据，请检查链路' if state=='degraded' else '已恢复接收 · 系统内网路由已就绪')
+            if state:self.emit('state',state=state,text='已发出内网数据，但超过 30 秒未收到内网数据，请检查链路或目标服务' if state=='degraded' else '已恢复接收内网数据 · 系统内网路由已就绪')
             if now>=heartbeat:
                 counter+=1
                 writers[control].enqueue(p.legacy_frame(7,user_id=uid) if protocol=='legacy' else encode_frame(6,token+struct.pack('!I',counter)))
                 if protocol=='v1':writers[data].enqueue(encode_frame(0x65))
                 heartbeat=now+8
             if now-stats>=1:
-                self.emit('traffic',tx=self.tx,rx=self.rx,received=received,pending_rx=pending.size,rx_backpressure=pending.blocked,send_queue=sum(writer.size for writer in writers.values()),last_receive_age=round(now-health.last_receive,3));stats=now
+                self.emit('traffic',tx=self.tx,rx=self.rx,received=received,pending_rx=pending.size,rx_backpressure=pending.blocked,send_queue=sum(writer.size for writer in writers.values()),last_receive_age=round(now-health.last_receive,3),last_gateway_age=round(now-last_gateway,3),rx_queue_age=round(pending.age,3),tx_queue_age=round(max(writer.age for writer in writers.values()),3),partial_frame_bytes=sum(reader.size for reader in readers.values()));stats=now

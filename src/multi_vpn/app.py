@@ -60,7 +60,7 @@ class Window(QMainWindow):
         right=QWidget();rl=QVBoxLayout(right);self.heading=QLabel('选择或新增连接');self.heading.setObjectName('heading');rl.addWidget(self.heading)
         self.status=QLabel('未连接');rl.addWidget(self.status)
         self.info=QLabel('');self.info.setWordWrap(True);self.info.setTextInteractionFlags(Qt.TextSelectableByMouse);rl.addWidget(self.info)
-        self.traffic=QLabel('发送 0 B / 接收 0 B');rl.addWidget(self.traffic)
+        self.traffic=QLabel('发送 0 B / 接收 0 B');self.traffic.setWordWrap(True);rl.addWidget(self.traffic)
         buttons=QHBoxLayout();rl.addLayout(buttons)
         self.connect_button=QPushButton('连接');self.connect_button.setObjectName('primary');self.connect_button.clicked.connect(self.connect_selected);buttons.addWidget(self.connect_button)
         self.disconnect_button=QPushButton('断开');self.disconnect_button.clicked.connect(self.disconnect_selected);buttons.addWidget(self.disconnect_button)
@@ -91,6 +91,8 @@ class Window(QMainWindow):
         self.info.setText(text);self.logs.setPlainText('\n'.join(self.log_lines.get(p.id,[])))
         cursor=self.logs.textCursor();cursor.movePosition(cursor.MoveOperation.End);self.logs.setTextCursor(cursor)
         s=self.sessions.get(p.id);self.traffic.setText(f'发送 {s.tx:,} B / 接收 {s.rx:,} B' if s else '发送 0 B / 接收 0 B')
+        if s and s.metrics:
+            self.traffic.setText(self.traffic.text()+f"\n发送排队 {s.metrics.get('send_queue',0):,} B / 接收排队 {s.metrics.get('pending_rx',0):,} B / 网卡重试 {s.metrics.get('rx_backpressure',0):,} 次 / 日志未保存 {s.metrics.get('log_dropped',0):,} 条")
     def password(self,p):
         if p.id in self.memory_passwords:return self.memory_passwords[p.id]
         try:return self.store.password(p)

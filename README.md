@@ -10,10 +10,10 @@ Python + Qt 编写的独立 SSL VPN 多连接桌面工具，主要用于个人�
 
 | 系统 | 文件 | 安装方式 |
 | --- | --- | --- |
-| Windows x64 | `MultiVPN-0.1.7-windows-x64-setup.exe` | 安装向导，自动创建桌面和开始菜单快捷方式，支持卸载 |
-| macOS Apple Silicon | `MultiVPN-0.1.7-macos-arm64.pkg` | 安装向导，安装到「应用程序」 |
-| macOS Intel | `MultiVPN-0.1.7-macos-x86_64.pkg` / `.dmg` | 安装向导或拖入 Applications；当前依赖要求 macOS 14+ |
-| macOS Apple Silicon | `MultiVPN-0.1.7-macos-arm64.dmg` | 将应用拖到 Applications |
+| Windows x64 | `MultiVPN-0.1.8-windows-x64-setup.exe` | 安装向导，自动创建桌面和开始菜单快捷方式，支持卸载 |
+| macOS Apple Silicon | `MultiVPN-0.1.8-macos-arm64.pkg` | 安装向导，安装到「应用程序」 |
+| macOS Intel | `MultiVPN-0.1.8-macos-x86_64.pkg` / `.dmg` | 安装向导或拖入 Applications；当前依赖要求 macOS 14+ |
+| macOS Apple Silicon | `MultiVPN-0.1.8-macos-arm64.dmg` | 将应用拖到 Applications |
 
 应用创建系统网卡需要管理员授权。macOS 启动时由系统弹出授权提示，程序不收集系统密码。初版安装包没有商业代码签名或 Apple 公证，系统可能提示开发者未验证；有签名和公证要求的环境请等待后续签名版本。
 
@@ -35,9 +35,33 @@ Python + Qt 编写的独立 SSL VPN 多连接桌面工具，主要用于个人�
 界面会显示日志位置；程序退出或重新连接不会清空磁盘日志。
 日志不记录密码、令牌、证书、原始报文、网关地址或账号；分享日志前仍应检查内容。
 
-发出内网数据后 30 秒没有任何网关回包，会显示链路异常提示；收到数据后自动恢复状态。
+发出内网数据后 30 秒没有内网数据回包，会显示链路异常提示；收到内网数据后自动恢复状态。
 这只是诊断提示，不能据此确定是客户端、网关还是上游网络故障，也不会自动重登账号。
 网卡短暂繁忙时先排队重试，接收队列有界；长时间无法投递导致队列耗尽时会明确报错。
+
+### 长时间运行优化（0.1.8）
+
+健康的空闲连接没有固定寿命，也不会为了“保活”定时断线重登。TCP keepalive
+用于辅助操作系统发现失效连接，不代表已验证网关应用层心跳应答。
+
+发送连续 30 秒无进展、同一发送报文排队超过 120 秒、同一网卡待投递报文积压
+超过 60 秒或同一隧道帧超过 120 秒仍不完整时，会明确报错并清理本次连接，
+而不是无限积压旧数据。短暂拥塞在限额内自动重试；超时后需用户重新连接。
+内网目标不回包只触发异常提示，不直接判定认证失效。
+
+诊断写入与网络转发分离。磁盘很慢或不可写时可能丢失日志，但不会因此阻塞
+隧道；`log_dropped` 与界面“日志未保存”可用于识别该情况。退出时最多等待
+日志线程两秒，不保证突然关机或磁盘故障时最后一批日志完整。
+
+新增诊断字段：`run_id`（每次连接）、`rx_queue_age` / `tx_queue_age`（秒）、
+`last_receive_age`（内网数据）、`last_gateway_age`（隧道任意接收）、
+`partial_frame_bytes`（尚未拼完整的帧）及 `log_dropped`。
+`SendStallError`、`SendQueueAgeError`、`AdapterStallError`、`FrameStallError`
+分别表示发送无进展、发送积压、网卡投递积压和帧不完整。
+
+离线测试包含模拟 72 小时的报文处理及重复队列周转，不代表已完成真实 VPN
+的 72 小时测试。上线前应验证持续 SSH/VS Code、下载、双连接并行、短时断网
+恢复以及睡眠唤醒；网关要求重新认证、短信或证书确认时仍需用户参与。
 
 ## 支持范围和验证情况
 

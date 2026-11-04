@@ -17,15 +17,28 @@ def event(name, **fields):
     sink=EVENT_SINK.get()
     if sink: sink(name, fields)
 
-def tls_connect(host,port,pin):
+def configure_transport(transport):
+    transport.setsockopt(socket.IPPROTO_TCP,socket.TCP_NODELAY,1)
+    transport.setsockopt(socket.SOL_SOCKET,socket.SO_KEEPALIVE,1)
+    try:
+        if hasattr(socket,'SIO_KEEPALIVE_VALS'):
+            transport.ioctl(socket.SIO_KEEPALIVE_VALS,(1,30000,10000))
+        else:
+            for name,value in (('TCP_KEEPIDLE',30),('TCP_KEEPINTVL',10),('TCP_KEEPCNT',3)):
+                option=getattr(socket,name,None)
+                if option is not None:transport.setsockopt(socket.IPPROTO_TCP,option,value)
+    except OSError:event('optional_keepalive_unavailable')
+
+def tls_connect(host,port,pin,timeout=12,read_timeout=15):
     ctx=ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
     ctx.check_hostname=False;ctx.verify_mode=ssl.CERT_NONE
-    raw=socket.create_connection((host,port),timeout=12)
+    raw=socket.create_connection((host,port),timeout=timeout)
     try:
+        configure_transport(raw)
         tls=ctx.wrap_socket(raw,server_hostname=host)
         if hashlib.sha256(tls.getpeercert(binary_form=True)).hexdigest()!=pin:
             tls.close();raise ProtocolError('Gateway certificate pin mismatch; credentials withheld')
-        tls.settimeout(15)
+        tls.settimeout(read_timeout)
         event('tls_connected',version=tls.version(),cipher=tls.cipher()[0])
         return tls
     except BaseException:
@@ -154,7 +167,7 @@ def legacy_logout(host,port,pin,info):
     if any(c in cookie for c in (b'\r',b'\n')):raise ProtocolError('Invalid session cookie')
     path=f'/logout.html?VTID={vt}&UserID={user}&SessionID={session}&SelectLanguage=2&'
     req=('GET '+path+' HTTP/1.1\r\nHost: '+host+'\r\nCookie: SVN_SessionID=').encode('ascii')+cookie+b'\r\n\r\n'
-    with tls_connect(host,port,pin) as s:
+    with tls_connect(host,port,pin,timeout=3,read_timeout=3) as s:
         s.sendall(req)
         reply=s.recv(2048)
         status=reply.split(b'\r\n',1)[0].decode('ascii','replace') if reply.startswith(b'HTTP/') else 'non-HTTP reply'
