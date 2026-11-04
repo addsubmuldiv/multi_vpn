@@ -1,6 +1,6 @@
 # Changes
 
-## 0.1.6
+## 0.1.7
 
 - Persist allowlisted diagnostic events and traffic/queue counters in UTF-8
   rotating logs under the configuration directory (`logs/multi-vpn.log`,
