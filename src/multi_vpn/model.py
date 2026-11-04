@@ -27,16 +27,12 @@ class Store:
         temp.write_text(json.dumps([asdict(p) for p in profiles],ensure_ascii=False,indent=2),encoding='utf-8')
         temp.replace(self.path)
     def password(self,profile):
-        if sys.platform=='darwin' and os.geteuid()==0:return ''
         import keyring
         return keyring.get_password('MultiVPN',profile.id) or ''
     def save_password(self,profile,password):
-        if sys.platform=='darwin' and os.geteuid()==0:
-            raise RuntimeError('管理员模式下不保存到其他用户的钥匙串')
         import keyring
         keyring.set_password('MultiVPN',profile.id,password)
     def delete_password(self,profile):
-        if sys.platform=='darwin' and os.geteuid()==0:return
         import keyring
         try:keyring.delete_password('MultiVPN',profile.id)
         except keyring.errors.PasswordDeleteError:pass
