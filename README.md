@@ -10,10 +10,10 @@ Python + Qt 编写的独立 SSL VPN 多连接桌面工具，主要用于个人�
 
 | 系统 | 文件 | 安装方式 |
 | --- | --- | --- |
-| Windows x64 | `MultiVPN-0.1.5-windows-x64-setup.exe` | 安装向导，自动创建桌面和开始菜单快捷方式，支持卸载 |
-| macOS Apple Silicon | `MultiVPN-0.1.5-macos-arm64.pkg` | 安装向导，安装到「应用程序」 |
-| macOS Intel | `MultiVPN-0.1.5-macos-x86_64.pkg` / `.dmg` | 安装向导或拖入 Applications；当前依赖要求 macOS 14+ |
-| macOS Apple Silicon | `MultiVPN-0.1.5-macos-arm64.dmg` | 将应用拖到 Applications |
+| Windows x64 | `MultiVPN-0.1.6-windows-x64-setup.exe` | 安装向导，自动创建桌面和开始菜单快捷方式，支持卸载 |
+| macOS Apple Silicon | `MultiVPN-0.1.6-macos-arm64.pkg` | 安装向导，安装到「应用程序」 |
+| macOS Intel | `MultiVPN-0.1.6-macos-x86_64.pkg` / `.dmg` | 安装向导或拖入 Applications；当前依赖要求 macOS 14+ |
+| macOS Apple Silicon | `MultiVPN-0.1.6-macos-arm64.dmg` | 将应用拖到 Applications |
 
 应用创建系统网卡需要管理员授权。macOS 启动时由系统弹出授权提示，程序不收集系统密码。初版安装包没有商业代码签名或 Apple 公证，系统可能提示开发者未验证；有签名和公证要求的环境请等待后续签名版本。
 
@@ -27,6 +27,17 @@ Python + Qt 编写的独立 SSL VPN 多连接桌面工具，主要用于个人�
 - Windows 可选择把密码保存到系统凭据库；macOS 初版管理员运行时不保存密码。验证码均不保存。
 - 配置不随软件发布，首次安装列表为空。关闭程序会断开本程序的连接并清理网卡及路由；当前不支持自动重连、开机自启。
 - 配置默认在 Windows `%APPDATA%/MultiVPN` 或 macOS `~/Library/Application Support/MultiVPN`。卸载保留个人配置及系统凭据。
+
+### 连接诊断（0.1.6）
+
+连接事件与每秒流量、发送队列、接收队列及网卡重试计数保存在配置目录的
+`logs/multi-vpn.log`，使用 UTF-8 JSON Lines。每个文件上限 2 MiB，保留三个备份。
+界面会显示日志位置；程序退出或重新连接不会清空磁盘日志。
+日志不记录密码、令牌、证书、原始报文、网关地址或账号；分享日志前仍应检查内容。
+
+发出内网数据后 30 秒没有任何网关回包，会显示链路异常提示；收到数据后自动恢复状态。
+这只是诊断提示，不能据此确定是客户端、网关还是上游网络故障，也不会自动重登账号。
+网卡短暂繁忙时先排队重试，接收队列有界；长时间无法投递导致队列耗尽时会明确报错。
 
 ## 支持范围和验证情况
 

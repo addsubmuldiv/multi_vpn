@@ -7,6 +7,7 @@ from .model import Profile,Store,RouteRegistry
 from .session import Session
 from .runtime import resource_root,relaunch_args
 from . import __version__
+from .diagnostics import EventLog
 
 class Signals(QObject):
     message=Signal(str,str,dict)
@@ -40,6 +41,7 @@ class Window(QMainWindow):
     def __init__(self):
         super().__init__();self.setWindowTitle('Multi VPN · '+__version__);self.resize(1020,690)
         self.store=Store();self.profiles=self.store.load();self.sessions={};self.states={};self.details={};self.memory_passwords={}
+        self.event_log=EventLog(self.store.path.parent/'logs')
         self.registry=RouteRegistry();self.signals=Signals();self.signals.message.connect(self.message)
         self._closing=False;root=QWidget();self.setCentralWidget(root);outer=QVBoxLayout(root)
         title=QLabel('Multi VPN');title.setObjectName('title');outer.addWidget(title)
@@ -63,6 +65,8 @@ class Window(QMainWindow):
         self.connect_button=QPushButton('连接');self.connect_button.setObjectName('primary');self.connect_button.clicked.connect(self.connect_selected);buttons.addWidget(self.connect_button)
         self.disconnect_button=QPushButton('断开');self.disconnect_button.clicked.connect(self.disconnect_selected);buttons.addWidget(self.disconnect_button)
         rl.addWidget(QLabel('连接日志'));self.logs=QPlainTextEdit();self.logs.setReadOnly(True);self.logs.setMaximumBlockCount(500);rl.addWidget(self.logs,1)
+        log_location=QLabel('诊断日志：'+str(self.event_log.path) if self.event_log.handler else '诊断日志无法写入，请检查配置目录权限')
+        log_location.setTextInteractionFlags(Qt.TextSelectableByMouse);log_location.setWordWrap(True);rl.addWidget(log_location)
         split.addWidget(left);split.addWidget(right);split.setSizes([310,710])
         self.log_lines={};self.populate()
         self.timer=QTimer(self);self.timer.timeout.connect(self.refresh);self.timer.start(1000)
@@ -132,7 +136,7 @@ class Window(QMainWindow):
             password,ok=QInputDialog.getText(self,'VPN 密码',p.username,QLineEdit.Password)
             if not ok:return
         self.log_lines[p.id]=[];self.details.pop(p.id,None)
-        session=Session(dataclasses.replace(p),password,self.registry,self.signals.message.emit)
+        session=Session(dataclasses.replace(p),password,self.registry,self.signals.message.emit,self.event_log)
         self.sessions[p.id]=session;session.start();self.refresh()
     def disconnect_selected(self):
         p=self.current()
@@ -154,6 +158,7 @@ class Window(QMainWindow):
         if event!='traffic':
             text=data.get('text') or data.get('message') or {'connected':'系统网卡及内网路由安装完成','sms':'等待短信验证','pin_saved':'网关证书已保存'}.get(event,event)
             self.log_lines.setdefault(id,[]).append(time.strftime('%H:%M:%S')+'  '+text)
+            del self.log_lines[id][:-500]
         self.refresh()
         if event=='error':
             dialog=QMessageBox(QMessageBox.Warning,p.name,data['message'],QMessageBox.Ok,self)
@@ -168,7 +173,7 @@ class Window(QMainWindow):
         if active:
             for s in active:s.stop()
             event.ignore();self.setEnabled(False);QTimer.singleShot(250,self.close);return
-        event.accept()
+        self.event_log.close();event.accept()
 
 def main():
     import argparse

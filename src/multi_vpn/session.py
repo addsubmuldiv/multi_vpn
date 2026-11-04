@@ -3,7 +3,7 @@ import hashlib,ipaddress,queue,select,socket,ssl,struct,threading,time,uuid
 from . import protocol as p
 from .wire import encode_frame,read_frame,FrameReader,parse_vip,auth_v1,validate_ipv4
 from .platforms import create_adapter
-from .transport import TLSWriter
+from .transport import TLSWriter,ReceiveQueue,ReceiveHealth
 
 class Cancelled(Exception):pass
 
@@ -24,12 +24,15 @@ def routes_for(cfg,host):
     return [str(r) for r in ipaddress.collapse_addresses(routes)]
 
 class Session(threading.Thread):
-    def __init__(self,profile,password,registry,emit):
+    def __init__(self,profile,password,registry,emit,event_log=None):
         super().__init__(daemon=True,name='vpn-'+profile.id[:8])
         self.profile=profile;self.password=password;self.registry=registry;self.emit_cb=emit
         self.cancel=threading.Event();self.answers=queue.Queue();self.sockets=[]
         self.tx=0;self.rx=0;self.adapter=None
-    def emit(self,name,**data):self.emit_cb(self.profile.id,name,data)
+        self.event_log=event_log
+    def emit(self,name,**data):
+        if self.event_log:self.event_log.write(self.profile.id,name,data)
+        self.emit_cb(self.profile.id,name,data)
     def stop(self):self.cancel.set()
     def answer(self,kind,value):self.answers.put((kind,value))
     def wait(self,kind,timeout=120):
@@ -95,7 +98,7 @@ class Session(threading.Thread):
             self.emit('state',state='connected',text='已连接 · 系统内网路由已就绪')
             self.forward(control,data,protocol,uid,token)
         except Cancelled:pass
-        except Exception as exc:self.emit('error',message=str(exc))
+        except Exception as exc:self.emit('error',message=str(exc),error_type=type(exc).__name__)
         finally:
             self.password=''
             if self.adapter:
@@ -118,21 +121,27 @@ class Session(threading.Thread):
         writers={s:TLSWriter(s) for s in set([control,data])}
         buffers={s:bytearray() for s in set([control,data])}
         heartbeat=time.monotonic()+8;stats=time.monotonic();counter=0
+        pending=ReceiveQueue();health=ReceiveHealth(stats);received=0
         while not self.cancel.is_set():
+            self.rx+=pending.flush(self.adapter)
             for _ in range(32):
                 if writers[data].size>=1024*1024:break
                 packet=self.adapter.read()
                 if packet is None:break
                 if not packet or packet[0]>>4!=4:continue
                 validate_ipv4(packet)
+                health.sent(time.monotonic())
                 writers[data].enqueue(p.legacy_frame(2,packet,uid) if protocol=='legacy' else encode_frame(0x66,bytes(8)+packet));self.tx+=len(packet)
             for writer in writers.values():writer.flush()
-            ready,_,_=select.select(list(buffers),[],[],.005)
-            for sock in buffers:
+            readable=[sock for sock in buffers if sock is not data or pending.size<1024*1024]
+            if readable:ready,_,_=select.select(readable,[],[],.005)
+            else:self.cancel.wait(.005);ready=[]
+            for sock in readable:
                 if sock not in ready and not sock.pending():continue
                 try:chunk=sock.recv(65536)
                 except (TimeoutError,ssl.SSLWantReadError,ssl.SSLWantWriteError,BlockingIOError):continue
                 if not chunk:raise RuntimeError('网关关闭连接')
+                health.received(time.monotonic())
                 buf=buffers[sock];buf.extend(chunk)
                 while len(buf)>=(16 if protocol=='legacy' else 8):
                     head=16 if protocol=='legacy' else 8
@@ -146,12 +155,15 @@ class Session(threading.Thread):
                     payload=bytes(buf[head:head+size]);del buf[:head+size]
                     if cmd==(2 if protocol=='legacy' else 0x66):
                         packet=payload if protocol=='legacy' else payload[8:]
-                        validate_ipv4(packet);self.adapter.write(packet);self.rx+=len(packet)
+                        validate_ipv4(packet);pending.enqueue(packet);received+=len(packet)
                     elif cmd==(6 if protocol=='legacy' else 50):raise RuntimeError('网关终止了会话')
             now=time.monotonic()
+            state=health.check(now)
+            if state:self.emit('state',state=state,text='已发出数据，但超过 30 秒未收到网关数据，请检查链路' if state=='degraded' else '已恢复接收 · 系统内网路由已就绪')
             if now>=heartbeat:
                 counter+=1
                 writers[control].enqueue(p.legacy_frame(7,user_id=uid) if protocol=='legacy' else encode_frame(6,token+struct.pack('!I',counter)))
                 if protocol=='v1':writers[data].enqueue(encode_frame(0x65))
                 heartbeat=now+8
-            if now-stats>=1:self.emit('traffic',tx=self.tx,rx=self.rx);stats=now
+            if now-stats>=1:
+                self.emit('traffic',tx=self.tx,rx=self.rx,received=received,pending_rx=pending.size,rx_backpressure=pending.blocked,send_queue=sum(writer.size for writer in writers.values()),last_receive_age=round(now-health.last_receive,3));stats=now

@@ -97,9 +97,9 @@ class WindowsAdapter:
     def write(self,packet):
         p=self.dll.WintunAllocateSendPacket(self.session,len(packet))
         if not p:
-            if c.get_last_error()==111:return
+            if c.get_last_error()==111:return False
             raise c.WinError(c.get_last_error())
-        c.memmove(p,packet,len(packet));self.dll.WintunSendPacket(self.session,p)
+        c.memmove(p,packet,len(packet));self.dll.WintunSendPacket(self.session,p);return True
     def close(self):
         if self.session:self.dll.WintunEndSession(self.session);self.session=None
         if self.handle:self.dll.WintunCloseAdapter(self.handle);self.handle=None
