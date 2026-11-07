@@ -1,5 +1,19 @@
 # Changes
 
+## Unreleased
+
+- Hide to the system tray on window close while keeping VPN sessions running;
+  retain normal minimize behavior. Add tray restore/disconnect-all/exit actions,
+  a main-window exit button and Ctrl+Q, with cleanup completed before exiting.
+- Keep the window accessible when the tray is unavailable, restore it for
+  authentication prompts, and retain aggregate status in the tray icon/tooltip.
+- Show a green checked connected button, connection status panel, elapsed time,
+  per-profile status icons, and an aggregate connection count/window icon badge.
+- Show connection/verification/disconnection progress and degraded-link warnings.
+  Preserve failure reasons after cleanup, clear stale adapter details, and ignore
+  delayed events from earlier connection attempts.
+- Add offline Qt interaction and rendering regressions for connection feedback.
+
 ## 0.2.0
 
 - Merge PR #1: keep the macOS Qt interface in the logged-in user session and

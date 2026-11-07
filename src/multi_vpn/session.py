@@ -4,8 +4,7 @@ from . import protocol as p
 from .wire import encode_frame,read_frame,FrameReader,parse_vip,auth_v1,validate_ipv4
 from .platforms import create_adapter
 from .transport import TLSWriter,ReceiveQueue,ReceiveHealth,TunnelReader
-
-class Cancelled(Exception):pass
+from .operations import Cancelled,cancellation,check_cancelled,resolve
 
 def routes_for(cfg,host):
     if cfg.get('route_type')!=1:raise RuntimeError('此网关要求全局路由，首版暂只支持内网分流')
@@ -13,7 +12,8 @@ def routes_for(cfg,host):
         routes=[ipaddress.IPv4Network((r['destination'],r['netmask']),strict=False) for r in cfg['routes']]
     else:routes=[ipaddress.IPv4Network(r) for r in cfg.get('expansion_routes',[])]
     excludes=[ipaddress.IPv4Network(x) for x in cfg.get('exclude_routes',[])]
-    excludes.append(ipaddress.IPv4Network(socket.gethostbyname(host)+'/32'))
+    gateway=resolve(host,443,family=socket.AF_INET)[0][4][0]
+    excludes.append(ipaddress.IPv4Network(gateway+'/32'))
     if any(r.prefixlen==0 for r in routes):raise RuntimeError('不允许默认路由，请使用内网分流配置')
     for excluded in excludes:
         revised=[]
@@ -53,17 +53,18 @@ class Session(threading.Thread):
         s=p.tls_connect(self.profile.host,self.profile.port,self.profile.pin);self.sockets.append(s);return s
     def trust(self):
         if self.profile.pin:return
-        ctx=ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT);ctx.check_hostname=False;ctx.verify_mode=ssl.CERT_NONE
-        with socket.create_connection((self.profile.host,self.profile.port),timeout=12) as raw:
-            with ctx.wrap_socket(raw,server_hostname=self.profile.host) as tls:
-                pin=hashlib.sha256(tls.getpeercert(binary_form=True)).hexdigest()
+        with p.open_tls(self.profile.host,self.profile.port) as tls:
+            pin=hashlib.sha256(tls.getpeercert(binary_form=True)).hexdigest()
         self.emit('certificate',fingerprint=pin)
         if self.wait('certificate') is not True:raise Cancelled()
         self.profile.pin=pin;self.emit('pin_saved',fingerprint=pin)
     def run(self):
+        with cancellation(self.cancel):self._run()
+    def _run(self):
         sink=p.EVENT_SINK.set(lambda event,fields:self.emit('diagnostic',message=event))
         control=None;token=None;info=None;protocol=None
         try:
+            check_cancelled()
             self.emit('state',state='connecting',text='连接网关')
             self.trust();protocol=p.negotiate(self.profile.host,self.profile.port,self.profile.pin)
             if self.cancel.is_set():raise Cancelled()
@@ -99,6 +100,7 @@ class Session(threading.Thread):
             if self.cancel.is_set():raise Cancelled()
             self.emit('state',state='connecting',text='安装系统网卡与路由')
             self.adapter=create_adapter('MultiVPN-'+self.profile.id[:8],cfg['vip'],routes,cfg.get('dns_servers',[]))
+            check_cancelled()
             self.emit('connected',vip=cfg['vip'],interface=self.adapter.name,index=self.adapter.index,routes=routes,protocol=protocol)
             self.emit('state',state='connected',text='已连接 · 系统内网路由已就绪')
             self.forward(control,data,protocol,uid,token)
@@ -107,7 +109,8 @@ class Session(threading.Thread):
         finally:
             self.password=''
             if self.adapter:
-                try:self.adapter.close()
+                try:
+                    with cancellation(None):self.adapter.close()
                 except Exception:self.emit('error',message='网卡清理失败，请检查系统网络设置')
                 self.adapter=None
             self.registry.release(self.profile.id)
@@ -118,7 +121,11 @@ class Session(threading.Thread):
                 try:sock.close()
                 except Exception:pass
             if info:
-                try:p.legacy_logout(self.profile.host,self.profile.port,self.profile.pin,info)
+                try:
+                    # Logout still releases the gateway session after a user
+                    # disconnect. Use fresh bounded setup I/O for cleanup.
+                    with cancellation(threading.Event()):
+                        p.legacy_logout(self.profile.host,self.profile.port,self.profile.pin,info)
                 except Exception:pass
             self.emit('state',state='disconnected',text='已断开');p.EVENT_SINK.reset(sink)
     def forward(self,control,data,protocol,uid,token):
