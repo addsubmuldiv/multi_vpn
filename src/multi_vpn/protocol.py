@@ -6,6 +6,7 @@ Credentials and session material are never written to logs.
 import argparse,ctypes,getpass,hashlib,ipaddress,json,pathlib,secrets,socket,ssl,struct,time,uuid
 from contextlib import ExitStack
 from .wire import auth_v1,encode_frame,read_frame,parse_tlvs,parse_vip
+from .operations import CancellableSocket,check_cancelled,connect_socket,is_cancellable
 
 from contextvars import ContextVar
 EVENT_SINK=ContextVar('vpn_event_sink',default=None)
@@ -29,20 +30,35 @@ def configure_transport(transport):
                 if option is not None:transport.setsockopt(socket.IPPROTO_TCP,option,value)
     except OSError:event('optional_keepalive_unavailable')
 
-def tls_connect(host,port,pin,timeout=12,read_timeout=15):
+def open_tls(host,port,timeout=12):
     ctx=ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
     ctx.check_hostname=False;ctx.verify_mode=ssl.CERT_NONE
-    raw=socket.create_connection((host,port),timeout=timeout)
+    raw=connect_socket(host,port,timeout)
+    tls=None
     try:
         configure_transport(raw)
-        tls=ctx.wrap_socket(raw,server_hostname=host)
+        if not is_cancellable():
+            tls=ctx.wrap_socket(raw,server_hostname=host)
+        else:
+            tls=CancellableSocket(ctx.wrap_socket(raw,server_hostname=host,do_handshake_on_connect=False),timeout)
+            tls.do_handshake()
+        return tls
+    except BaseException:
+        if tls is not None:tls.close()
+        raw.close();raise
+
+
+def tls_connect(host,port,pin,timeout=12,read_timeout=15):
+    tls=open_tls(host,port,timeout)
+    try:
+        check_cancelled()
         if hashlib.sha256(tls.getpeercert(binary_form=True)).hexdigest()!=pin:
             tls.close();raise ProtocolError('Gateway certificate pin mismatch; credentials withheld')
         tls.settimeout(read_timeout)
         event('tls_connected',version=tls.version(),cipher=tls.cipher()[0])
         return tls
     except BaseException:
-        raw.close();raise
+        tls.close();raise
 
 def parse_auth(frame):
     if frame.command!=1 or len(frame.payload)<8:
@@ -74,6 +90,7 @@ def sms_packet(code):
 def exact(tls,n):
     data=bytearray()
     while len(data)<n:
+        check_cancelled()
         chunk=tls.recv(n-len(data))
         if not chunk:raise EOFError('stream ended before expected reply')
         data.extend(chunk)

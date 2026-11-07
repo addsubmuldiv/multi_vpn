@@ -2,9 +2,10 @@
 import ctypes as c
 from ctypes import wintypes as w
 import ipaddress,json,pathlib,subprocess,sys
+from ..operations import run_process
 
 def powershell(command):
-    result=subprocess.run(['powershell.exe','-NoProfile','-NonInteractive','-Command',
+    result=run_process(['powershell.exe','-NoProfile','-NonInteractive','-Command',
                            "$ErrorActionPreference='Stop';"+command],capture_output=True,
                           text=True,encoding='utf-8',errors='replace',timeout=45,
                           creationflags=subprocess.CREATE_NO_WINDOW)

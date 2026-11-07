@@ -1,5 +1,6 @@
 """Native utun backend. Requires a privileged helper; no third-party kernel driver."""
 import ctypes,fcntl,ipaddress,os,socket,struct,subprocess
+from ..operations import run_process
 
 def create_root_adapter(vip,routes):
     if os.geteuid()!=0:raise RuntimeError('macOS 系统网卡需要管理员权限')
@@ -13,22 +14,27 @@ def create_root_adapter(vip,routes):
         if libc.connect(sock.fileno(),addr,len(addr))!=0:raise OSError(ctypes.get_errno(),'utun connect failed')
         name=sock.getsockopt(2,2,64).split(b'\0')[0].decode()
         index=socket.if_nametoindex(name);vip=str(ipaddress.IPv4Address(vip))
-        subprocess.run(['/sbin/ifconfig',name,'inet',vip,vip,'netmask','255.255.255.255','mtu','1400','up'],check=True,capture_output=True)
+        run_process(['/sbin/ifconfig',name,'inet',vip,vip,'netmask','255.255.255.255','mtu','1400','up'],timeout=10,check=True,capture_output=True)
         for route in routes:
             route=str(ipaddress.IPv4Network(route))
-            subprocess.run(['/sbin/route','-n','add','-net',route,'-interface',name],check=True,capture_output=True)
+            run_process(['/sbin/route','-n','add','-net',route,'-interface',name],timeout=10,check=True,capture_output=True)
             added.append(route)
         sock.setblocking(False)
         return sock,name,index,added
     except BaseException:
-        for route in reversed(added):
-            subprocess.run(['/sbin/route','-n','delete','-net',route,'-interface',name],capture_output=True)
-        sock.close();raise
+        try:close_root_adapter(sock,name,added)
+        except Exception:pass
+        raise
 
 def close_root_adapter(sock,name,routes):
-    for route in reversed(routes):
-        subprocess.run(['/sbin/route','-n','delete','-net',route,'-interface',name],capture_output=True)
-    sock.close()
+    error=None
+    try:
+        for route in reversed(routes):
+            try:
+                subprocess.run(['/sbin/route','-n','delete','-net',route,'-interface',name],capture_output=True,timeout=10)
+            except Exception as exc:error=exc
+    finally:sock.close()
+    if error:raise error
 
 class MacAdapter:
     def __init__(self,name,vip,routes,dns=()):

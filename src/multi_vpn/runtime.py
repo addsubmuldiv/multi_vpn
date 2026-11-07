@@ -1,6 +1,7 @@
 """Resources and explicit relaunch arguments for installed/frozen builds."""
 from pathlib import Path
 import array,json,os,shlex,socket,struct,subprocess,sys,tempfile,time
+from .operations import check_cancelled,CancellableSocket
 
 def _send_helper_message(connection,message,fd=None):
     payload=json.dumps(message,separators=(',',':')).encode('utf-8')
@@ -11,24 +12,29 @@ def _send_helper_message(connection,message,fd=None):
 
 def _receive_helper_message(connection):
     header,ancillary,_,_=connection.recvmsg(4,socket.CMSG_SPACE(array.array('i').itemsize))
-    while len(header)<4:
-        chunk=connection.recv(4-len(header))
-        if not chunk:raise RuntimeError('管理员辅助进程已断开')
-        header+=chunk
-    size=struct.unpack('!I',header)[0]
-    if size>8192:raise RuntimeError('管理员辅助进程返回数据过大')
-    chunks=[];received=0
-    while received<size:
-        chunk=connection.recv(size-received)
-        if not chunk:raise RuntimeError('管理员辅助进程已断开')
-        chunks.append(chunk);received+=len(chunk)
     fds=array.array('i')
     for level,kind,data in ancillary:
         if level==socket.SOL_SOCKET and kind==socket.SCM_RIGHTS:
             fds.frombytes(data[:len(data)-len(data)%fds.itemsize])
-    return json.loads(b''.join(chunks)),fds
+    try:
+        while len(header)<4:
+            chunk=connection.recv(4-len(header))
+            if not chunk:raise RuntimeError('管理员辅助进程已断开')
+            header+=chunk
+        size=struct.unpack('!I',header)[0]
+        if size>8192:raise RuntimeError('管理员辅助进程返回数据过大')
+        chunks=[];received=0
+        while received<size:
+            chunk=connection.recv(size-received)
+            if not chunk:raise RuntimeError('管理员辅助进程已断开')
+            chunks.append(chunk);received+=len(chunk)
+        return json.loads(b''.join(chunks)),fds
+    except BaseException:
+        for fd in fds:os.close(fd)
+        raise
 
 def macos_privileged_adapter(vip,routes):
+    check_cancelled()
     prefix=[] if getattr(sys,'frozen',False) else ['-m','multi_vpn']
     helper=shlex.join([sys.executable,*prefix,'--network-helper'])
     if not getattr(sys,'frozen',False):
@@ -46,10 +52,12 @@ def macos_privileged_adapter(vip,routes):
                                      stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
             deadline=time.monotonic()+180
             while True:
+                check_cancelled()
                 try:control,_=listener.accept();break
                 except socket.timeout:
                     if process.poll() is not None:raise RuntimeError('未取得管理员授权或辅助进程未能启动')
                     if time.monotonic()>=deadline:raise RuntimeError('等待管理员授权超时')
+            control=CancellableSocket(control,30)
             response,fds=_receive_helper_message(control)
             if response.get('error'):raise RuntimeError(response['error'])
             if not fds:raise RuntimeError('管理员辅助进程未返回 utun 网卡')
@@ -133,7 +141,7 @@ def frozen_self_test(report=None):
         app=QApplication.instance() or QApplication([])
         window=Window();window.show();app.processEvents()
         assert window.isVisible() and window.list.count()==0
-        QTimer.singleShot(100,app.quit);app.exec();window.close();app.processEvents()
+        QTimer.singleShot(100,window.request_exit);app.exec();window.request_exit();app.processEvents()
     if previous is None:os.environ.pop('MULTIVPN_DATA_DIR',None)
     else:os.environ['MULTIVPN_DATA_DIR']=previous
     if report:
