@@ -5,6 +5,25 @@ from .wire import encode_frame,read_frame,FrameReader,parse_vip,auth_v1,validate
 from .platforms import create_adapter
 from .transport import TLSWriter,ReceiveQueue,ReceiveHealth,TunnelReader
 from .operations import Cancelled,cancellation,check_cancelled,resolve
+from .legacy_udp import LegacyUdp
+
+
+class GatewayKickout(ConnectionError):
+    def __init__(self):
+        super().__init__('网关终止了会话（KICKOUT）')
+
+
+def legacy_exchange(control, uid, command, payload=b''):
+    control.sendall(p.legacy_frame(command, payload, uid))
+    for _ in range(8):
+        reply, frame = p.read_legacy_frame(control)
+        if reply == command:
+            return frame[16:]
+        if reply == 8:
+            raise GatewayKickout()
+        if reply != 7:
+            raise p.ProtocolError(f'旧版网关请求 {command} 收到了意外回复 {reply}')
+    raise p.ProtocolError(f'旧版网关未完成请求 {command}')
 
 def routes_for(cfg,host):
     if cfg.get('route_type')!=1:raise RuntimeError('此网关要求全局路由，首版暂只支持内网分流')
@@ -62,7 +81,7 @@ class Session(threading.Thread):
         with cancellation(self.cancel):self._run()
     def _run(self):
         sink=p.EVENT_SINK.set(lambda event,fields:self.emit('diagnostic',message=event))
-        control=None;token=None;info=None;protocol=None
+        control=None;token=None;info=None;protocol=None;udp=None;kicked=False
         try:
             check_cancelled()
             self.emit('state',state='connecting',text='连接网关')
@@ -85,9 +104,7 @@ class Session(threading.Thread):
             self.emit('state',state='connecting',text='获取内网配置')
             control=self.connect_tls()
             if protocol=='legacy':
-                control.sendall(p.legacy_frame(3,user_id=uid));cmd,packet=p.read_legacy_frame(control)
-                if cmd!=3:raise RuntimeError('网关未接受地址请求')
-                cfg=p.parse_legacy_config(packet);data=control
+                cfg,control,data,udp=self.open_legacy_tunnel(control,uid)
             else:
                 control.sendall(encode_frame(3,token));reply=read_frame(control.recv)
                 if reply.command!=3:raise RuntimeError('网关未接受地址请求')
@@ -101,10 +118,13 @@ class Session(threading.Thread):
             self.emit('state',state='connecting',text='安装系统网卡与路由')
             self.adapter=create_adapter('MultiVPN-'+self.profile.id[:8],cfg['vip'],routes,cfg.get('dns_servers',[]))
             check_cancelled()
-            self.emit('connected',vip=cfg['vip'],interface=self.adapter.name,index=self.adapter.index,routes=routes,protocol=protocol)
+            self.emit('connected',vip=cfg['vip'],interface=self.adapter.name,index=self.adapter.index,routes=routes,protocol=protocol,transport='udp' if udp else 'tcp')
             self.emit('state',state='connected',text='已连接 · 系统内网路由已就绪')
-            self.forward(control,data,protocol,uid,token)
+            self.forward(control,data,protocol,uid,token,udp)
         except Cancelled:pass
+        except GatewayKickout as exc:
+            kicked=True
+            self.emit('error',message=str(exc),error_type=type(exc).__name__)
         except Exception as exc:self.emit('error',message=str(exc),error_type=type(exc).__name__)
         finally:
             self.password=''
@@ -114,13 +134,13 @@ class Session(threading.Thread):
                 except Exception:self.emit('error',message='网卡清理失败，请检查系统网络设置')
                 self.adapter=None
             self.registry.release(self.profile.id)
-            if control:
+            if control and not kicked:
                 try:control.sendall(p.legacy_frame(4,user_id=struct.unpack_from('!I',info,40)[0]) if protocol=='legacy' else encode_frame(5,token))
                 except Exception:pass
             for sock in self.sockets:
                 try:sock.close()
                 except Exception:pass
-            if info:
+            if info and not kicked:
                 try:
                     # Logout still releases the gateway session after a user
                     # disconnect. Use fresh bounded setup I/O for cleanup.
@@ -128,14 +148,78 @@ class Session(threading.Thread):
                         p.legacy_logout(self.profile.host,self.profile.port,self.profile.pin,info)
                 except Exception:pass
             self.emit('state',state='disconnected',text='已断开');p.EVENT_SINK.reset(sink)
-    def forward(self,control,data,protocol,uid,token):
+
+    def open_legacy_tunnel(self, control, uid):
+        cfg = self.legacy_config(control, uid)
+        if not self.profile.legacy_udp or control.family != socket.AF_INET:
+            return cfg, control, control, None
+        try:
+            udp, data = self.open_legacy_udp(control, uid, cfg['vip'])
+            return cfg, control, data, udp
+        except GatewayKickout:
+            raise
+        except (OSError, EOFError, p.ProtocolError) as exc:
+            check_cancelled()
+            self.emit('diagnostic', message='UDP 协商失败，正在使用当前认证会话建立 TLS 数据通道',
+                      error_type=type(exc).__name__)
+            # A timed-out exchange may have consumed part of a frame. Open a
+            # fresh control stream and reuse the authenticated legacy user ID.
+            control.close()
+            control = self.connect_tls()
+            return self.legacy_config(control, uid), control, control, None
+
+    def legacy_config(self, control, uid):
+        payload = legacy_exchange(control, uid, 3)
+        return p.parse_legacy_config(p.legacy_frame(3, payload, uid))
+
+    def open_legacy_udp(self, control, uid, vip):
+        self.emit('state', state='connecting', text='协商旧版 UDP 隧道')
+        # The request capability (4) and selected cipher mode (3) differ.
+        capability = struct.pack('!I', 4)
+        original_timeout = control.gettimeout()
+        control.settimeout(5)
+        try:
+            reply = legacy_exchange(control, uid, 13, capability)
+            if len(reply) < 20 or reply[:4] != struct.pack('!I', 3):
+                raise p.ProtocolError('网关未接受旧版 UDP 加密模式')
+            port_reply = legacy_exchange(control, uid, 26, capability)
+            if len(port_reply) < 2 or port_reply[:2] == b'\0\0':
+                raise p.ProtocolError('网关未返回有效的 UDP 端口')
+        finally:
+            control.settimeout(original_timeout)
+        port = struct.unpack_from('!H', port_reply)[0]
+        gateway = control.getpeername()[0]
+        udp = LegacyUdp(reply[4:20], uid, vip, gateway)
+        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        try:
+            sock.bind((control.getsockname()[0], 0))
+            sock.connect((gateway, port))
+            sock.setblocking(False)
+            udp.wait_for_probe(sock)
+        except OSError:
+            sock.close()
+            check_cancelled()
+            control.sendall(p.legacy_frame(16, user_id=uid))
+            self.emit('diagnostic', message='UDP 探测未通过，当前会话已切回 TLS')
+            return None,control
+        except BaseException:
+            sock.close()
+            raise
+        self.sockets.append(sock)
+        self.emit('diagnostic', message='旧版 UDP 探测成功')
+        return udp,sock
+
+    def forward(self,control,data,protocol,uid,token,udp=None):
         for sock in set([control,data]):sock.setblocking(False)
-        writers={s:TLSWriter(s) for s in set([control,data])}
-        readers={sock:TunnelReader(protocol) for sock in writers}
+        udp_sock=data if udp else None
+        writers={s:TLSWriter(s,datagrams=s is udp_sock) for s in set([control,data])}
+        readers={sock:TunnelReader(protocol) for sock in writers if sock is not udp_sock}
+        def has_plaintext(sock):
+            return sock is not udp_sock and sock.pending()
         receive_wants_write=set()
         heartbeat=time.monotonic()+8;stats=time.monotonic();counter=0
         pending=ReceiveQueue();health=ReceiveHealth(stats);received=0
-        last_gateway=stats
+        last_gateway=stats;last_udp=stats;udp_invalid=0
         while not self.cancel.is_set():
             self.rx+=pending.flush(self.adapter)
             for _ in range(32):
@@ -145,44 +229,63 @@ class Session(threading.Thread):
                 if not packet or packet[0]>>4!=4:continue
                 validate_ipv4(packet)
                 health.sent(time.monotonic())
-                writers[data].enqueue(p.legacy_frame(2,packet,uid) if protocol=='legacy' else encode_frame(0x66,bytes(8)+packet));self.tx+=len(packet)
+                frame=udp.encode(packet) if udp else p.legacy_frame(2,packet,uid) if protocol=='legacy' else encode_frame(0x66,bytes(8)+packet)
+                writers[data].enqueue(frame);self.tx+=len(packet)
             for writer in writers.values():
                 writer.check_timeout()
                 if writer.want is None:writer.flush()
             for reader in readers.values():reader.check_timeout()
-            readable=[sock for sock in readers if sock is not data or pending.size<1024*1024]
+            readable=[sock for sock in writers if sock is not data or pending.size<1024*1024]
             read_wait=list(dict.fromkeys(readable+[sock for sock,writer in writers.items() if writer.want=='read']))
             write_wait=[sock for sock,writer in writers.items() if writer.want=='write' or sock in receive_wants_write]
-            has_pending=any(sock.pending() for sock in readable)
+            has_pending=any(has_plaintext(sock) for sock in readable)
             if read_wait or write_wait:ready,writable,_=select.select(read_wait,write_wait,[],0 if has_pending else .005)
             else:self.cancel.wait(.005);ready=[]
             if not read_wait and not write_wait:writable=[]
             for sock,writer in writers.items():
-                retry_read=writer.want=='read' and (sock in ready or sock.pending())
+                retry_read=writer.want=='read' and (sock in ready or has_plaintext(sock))
                 retry_write=writer.want=='write' and sock in writable
                 if retry_read or retry_write:writer.flush()
             for sock in readable:
-                if sock not in ready and not sock.pending() and not (sock in receive_wants_write and sock in writable):continue
+                if sock not in ready and not has_plaintext(sock) and not (sock in receive_wants_write and sock in writable):continue
                 for batch in range(4):
                     if sock is data and pending.size>=1024*1024:break
                     try:chunk=sock.recv(65536)
                     except ssl.SSLWantWriteError:receive_wants_write.add(sock);break
                     except (TimeoutError,ssl.SSLWantReadError,BlockingIOError):receive_wants_write.discard(sock);break
+                    if sock is udp_sock:
+                        try:packet=udp.decode(chunk)
+                        except ValueError:
+                            udp_invalid+=1
+                            continue
+                        last_udp=last_gateway=time.monotonic()
+                        if packet is not None:
+                            pending.enqueue(packet);received+=len(packet);health.received(last_udp)
+                        continue
                     if not chunk:raise ConnectionError('网关关闭连接')
                     receive_wants_write.discard(sock);last_gateway=time.monotonic()
                     for cmd,payload in readers[sock].feed(chunk):
-                        if cmd==(2 if protocol=='legacy' else 0x66):
+                        if cmd==(2 if protocol=='legacy' else 0x66) and not udp:
                             packet=payload if protocol=='legacy' else payload[8:]
                             validate_ipv4(packet);pending.enqueue(packet);received+=len(packet);health.received(time.monotonic())
-                        elif cmd==(6 if protocol=='legacy' else 50):raise RuntimeError('网关终止了会话')
-                    if not sock.pending():break
+                        elif protocol=='legacy' and cmd==8:raise GatewayKickout()
+                        elif protocol=='v1' and cmd==50:raise RuntimeError('网关终止了会话')
+                    if not has_plaintext(sock):break
             now=time.monotonic()
+            if udp and now-last_udp>=40:
+                writers[control].enqueue(p.legacy_frame(16,user_id=uid))
+                del writers[udp_sock]
+                udp_sock.close()
+                self.sockets.remove(udp_sock)
+                udp=None;udp_sock=None;data=control
+                self.emit('transport_changed',transport='tcp',message='UDP 隧道 40 秒未收到网关回应，当前会话切回 TLS')
             state=health.check(now)
             if state:self.emit('state',state=state,text='已发出内网数据，但超过 30 秒未收到内网数据，请检查链路或目标服务' if state=='degraded' else '已恢复接收内网数据 · 系统内网路由已就绪')
             if now>=heartbeat:
                 counter+=1
                 writers[control].enqueue(p.legacy_frame(7,user_id=uid) if protocol=='legacy' else encode_frame(6,token+struct.pack('!I',counter)))
                 if protocol=='v1':writers[data].enqueue(encode_frame(0x65))
+                if udp:writers[data].enqueue(udp.probe())
                 heartbeat=now+8
             if now-stats>=1:
-                self.emit('traffic',tx=self.tx,rx=self.rx,received=received,pending_rx=pending.size,rx_backpressure=pending.blocked,send_queue=sum(writer.size for writer in writers.values()),last_receive_age=round(now-health.last_receive,3),last_gateway_age=round(now-last_gateway,3),rx_queue_age=round(pending.age,3),tx_queue_age=round(max(writer.age for writer in writers.values()),3),partial_frame_bytes=sum(reader.size for reader in readers.values()));stats=now
+                self.emit('traffic',tx=self.tx,rx=self.rx,received=received,pending_rx=pending.size,rx_backpressure=pending.blocked,tx_backpressure=sum(writer.blocked for writer in writers.values()),send_queue=sum(writer.size for writer in writers.values()),last_receive_age=round(now-health.last_receive,3),last_gateway_age=round(now-last_gateway,3),rx_queue_age=round(pending.age,3),tx_queue_age=round(max(writer.age for writer in writers.values()),3),partial_frame_bytes=sum(reader.size for reader in readers.values()),udp_invalid=udp_invalid);stats=now

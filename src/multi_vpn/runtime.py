@@ -115,7 +115,13 @@ def resource_root():
     return Path(getattr(sys,'_MEIPASS',Path(__file__).resolve().parents[2]))
 
 def relaunch_args(data_dir):
-    prefix=[] if getattr(sys,'frozen',False) else ['-m','multi_vpn']
+    prefix=[]
+    if not getattr(sys,'frozen',False):
+        # Windows elevation can start with a fresh environment. Preserve the
+        # checkout explicitly so Python cannot pick up a different installation.
+        source=str(Path(__file__).resolve().parent.parent)
+        bootstrap=f"import runpy,sys; sys.path.insert(0,{source!r}); runpy.run_module('multi_vpn',run_name='__main__',alter_sys=True)"
+        prefix=['-c',bootstrap]
     return prefix+['--data-dir',str(Path(data_dir).resolve())]
 
 def frozen_self_test(report=None):

@@ -73,10 +73,12 @@ class ReceiveHealth:
         return None
 
 class TLSWriter:
-    def __init__(self,sock,timeout=30,clock=time.monotonic,max_age=120):
+    def __init__(self,sock,timeout=30,clock=time.monotonic,max_age=120,*,datagrams=False):
         self.sock=sock;self.timeout=timeout;self.clock=clock
         self.queue=deque();self.offset=0;self.size=0;self.progress=clock()
         self.timestamps=deque();self.max_age=max_age;self.want=None
+        self.blocked = 0
+        self.datagrams = datagrams
     @property
     def age(self):return self.clock()-self.timestamps[0] if self.timestamps else 0
     def check_timeout(self):
@@ -93,7 +95,12 @@ class TLSWriter:
             self.check_timeout()
             try:n=self.sock.send(memoryview(self.queue[0])[self.offset:])
             except ssl.SSLWantReadError:self.want='read';return
-            except (ssl.SSLWantWriteError,BlockingIOError):self.want='write';return
+            except (ssl.SSLWantWriteError, BlockingIOError):
+                self.want = 'write'
+                self.blocked += 1
+                return
             if n==0:raise ConnectionError('网关已关闭发送连接')
+            if self.datagrams and n != len(self.queue[0]):
+                raise OSError('UDP 数据报未完整发送')
             self.want=None;self.progress=self.clock();self.offset+=n;self.size-=n
             if self.offset==len(self.queue[0]):self.queue.popleft();self.timestamps.popleft();self.offset=0

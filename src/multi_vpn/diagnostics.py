@@ -6,7 +6,7 @@ from pathlib import Path
 
 
 class EventLog:
-    fields={'state','error_type','protocol','tx','rx','received','pending_rx','rx_backpressure','send_queue','last_receive_age','last_gateway_age','rx_queue_age','tx_queue_age','partial_frame_bytes','log_dropped'}
+    fields={'state','error_type','protocol','transport','tx','rx','received','pending_rx','rx_backpressure','tx_backpressure','send_queue','last_receive_age','last_gateway_age','rx_queue_age','tx_queue_age','partial_frame_bytes','log_dropped','udp_invalid'}
     def __init__(self,directory,max_bytes=2*1024*1024,backups=3):
         self.path=Path(directory)/'multi-vpn.log';self.handler=None;self.error=None
         self.queue=queue.Queue(maxsize=256);self.stopping=threading.Event();self.worker=None
@@ -44,6 +44,7 @@ class EventLog:
             value=data.get(name)
             if isinstance(value,(int,float)) or name=='state' and value in {'connecting','sms','connected','degraded','disconnected'} or name=='protocol' and value in {'legacy','v1'}:
                 row[name]=value
+            elif name=='transport' and value in ('udp','tcp'):row[name]=value
             elif name=='error_type' and isinstance(value,str) and value.isidentifier():row[name]=value
         record=logging.LogRecord('multi_vpn',logging.INFO,'',0,json.dumps(row,ensure_ascii=False),(),None)
         with self.lock:

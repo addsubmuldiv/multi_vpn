@@ -9,6 +9,7 @@ class Profile:
     username:str=''
     pin:str=''
     id:str=field(default_factory=lambda:uuid.uuid4().hex)
+    legacy_udp:bool=True
 
 def config_dir():
     if os.environ.get('MULTIVPN_DATA_DIR'):

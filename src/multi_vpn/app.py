@@ -51,6 +51,9 @@ class ProfileDialog(QDialog):
         self.remember=QCheckBox('保存密码');self.remember.setChecked(bool(password))
         for title,w in [('名称',self.name),('VPN 网关',self.host),('端口',self.port),('账号',self.username),('密码',self.password)]:layout.addRow(title,w)
         layout.addRow(self.remember)
+        self.legacy_udp=QCheckBox('旧版网关优先使用 UDP')
+        self.legacy_udp.setChecked(profile.legacy_udp)
+        layout.addRow(self.legacy_udp)
         self.buttons=QDialogButtonBox(QDialogButtonBox.Save|QDialogButtonBox.Cancel)
         self.buttons.accepted.connect(self.accept);self.buttons.rejected.connect(self.reject);layout.addRow(self.buttons)
     def accept(self):
@@ -61,6 +64,7 @@ class ProfileDialog(QDialog):
         if self.profile.host!=self.host.text().strip() or self.profile.port!=self.port.value():self.profile.pin=''
         self.profile.name=self.name.text().strip() or self.host.text().strip()
         self.profile.host=self.host.text().strip();self.profile.port=self.port.value();self.profile.username=self.username.text().strip()
+        self.profile.legacy_udp=self.legacy_udp.isChecked()
         super().accept()
 
 class Window(QMainWindow):
@@ -264,6 +268,7 @@ class Window(QMainWindow):
         d=self.details.get(p.id,{})
         text=f'网关：{p.host}:{p.port}\n账号：{p.username}'
         if d:text+=f"\n虚拟 IP：{d['vip']}\n系统网卡：{d['interface']}\n内网路由："+', '.join(d['routes'])
+        if d.get('transport'):text+='\n数据通道：'+('UDP' if d['transport']=='udp' else 'TLS / TCP')
         self.info.setText(text)
         logs='\n'.join(self.log_lines.get(p.id,[]))
         if self.logs.toPlainText()!=logs:
@@ -347,6 +352,7 @@ class Window(QMainWindow):
                 self.states[id]=(state,data['text'])
                 if state=='connected':self.connected_since.setdefault(id,time.monotonic())
         elif event=='connected':self.details[id]=data
+        elif event=='transport_changed' and id in self.details:self.details[id]['transport']=data['transport']
         elif event=='sms':
             self.show_window()
             self.states[id]=('sms','请输入本次收到的短信验证码');self.refresh()
