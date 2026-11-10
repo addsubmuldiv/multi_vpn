@@ -120,6 +120,8 @@ def test_probe_and_packet_through_udp_socket(payload_size):
         try:
             cfg, negotiated_control, data, udp = session.open_legacy_tunnel(control, UID)
             assert cfg['vip'] == VIP and negotiated_control is control
+            if sys.platform == 'win32':
+                assert data.getsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF) >= 256 * 1024
             assert control.sent == [legacy_frame(3, user_id=UID),
                                     legacy_frame(13, bytes.fromhex('00000004'), UID),
                                     legacy_frame(26, bytes.fromhex('00000004'), UID)]

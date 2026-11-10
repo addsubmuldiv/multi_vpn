@@ -95,17 +95,19 @@ class TLSWriter:
         for _ in range(32):
             if not self.queue:self.want=None;return
             self.check_timeout()
-            try:n=self.sock.send(memoryview(self.queue[0])[self.offset:])
+            frame=self.queue[0]
+            remaining=memoryview(frame)[self.offset:] if self.offset else frame
+            try:n=self.sock.send(remaining)
             except ssl.SSLWantReadError:self.want='read';return
             except (ssl.SSLWantWriteError, BlockingIOError):
                 self.want = 'write'
                 self.blocked += 1
                 return
             if n==0:raise ConnectionError('网关已关闭发送连接')
-            if self.datagrams and n != len(self.queue[0]):
+            if self.datagrams and n != len(frame):
                 raise OSError('UDP 数据报未完整发送')
             self.want=None;self.progress=self.clock();self.offset+=n;self.size-=n
             self.sent_bytes += n
-            if self.offset==len(self.queue[0]):
+            if self.offset==len(frame):
                 self.sent_frames += 1
                 self.queue.popleft();self.timestamps.popleft();self.offset=0

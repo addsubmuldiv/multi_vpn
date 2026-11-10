@@ -19,6 +19,7 @@ GATEWAY_PREFIX = bytes.fromhex('fefcefbec192a4d6011c')
 PROBE = legacy_frame(14)
 PROBE_ID_OFFSET = 32
 PATH_MTU_STEPS = (1360, 1320, 1280, 1200, 1000, 576)
+MIN_RECEIVE_BUFFER = 256 * 1024
 
 
 class LegacyUdp:
@@ -39,6 +40,12 @@ class LegacyUdp:
         local, remote = self.endpoint
         sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         try:
+            try:
+                # Leave room for bursts while the forwarding loop is busy.
+                if sock.getsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF) < MIN_RECEIVE_BUFFER:
+                    sock.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, MIN_RECEIVE_BUFFER)
+            except OSError:
+                pass
             sock.bind((local, 0))
             sock.connect(remote)
             sock.setblocking(False)
