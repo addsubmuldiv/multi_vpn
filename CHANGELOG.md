@@ -1,5 +1,12 @@
 # Changes
 
+## 0.2.5
+
+- Increase the legacy UDP socket receive buffer to absorb packet bursts.
+- Reduce per-packet forwarding overhead.
+- Recover the V1 TLS data channel within the existing authenticated session
+  when the control channel remains available.
+
 ## 0.2.4
 
 - Check for updates at startup and daily at 10:00 local time. Add a manual
