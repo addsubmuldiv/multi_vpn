@@ -2,7 +2,7 @@
 import hashlib,ipaddress,queue,select,socket,ssl,struct,threading,time,uuid
 from . import protocol as p
 from .wire import encode_frame,read_frame,FrameReader,parse_vip,auth_v1,validate_ipv4
-from .platforms import create_adapter
+from .platforms import create_adapter,validate_mtu
 from .transport import TLSWriter,ReceiveQueue,ReceiveHealth,TunnelReader
 from .operations import Cancelled,cancellation,check_cancelled,resolve
 from .legacy_udp import LegacyUdp
@@ -115,10 +115,18 @@ class Session(threading.Thread):
                 if reply.command!=100 or not reply.payload or reply.payload[0]!=0:raise RuntimeError('网关拒绝数据连接')
             routes=routes_for(cfg,self.profile.host);self.registry.acquire(self.profile.id,routes)
             if self.cancel.is_set():raise Cancelled()
+            mtu=validate_mtu(self.profile.mtu)
+            if udp and self.profile.auto_mtu:
+                confirmed=udp.discover_path_mtu(data,mtu)
+                if confirmed is not None:
+                    mtu=confirmed
+                    self.emit('diagnostic',message=f'UDP 发送路径探测确认隧道 MTU {mtu}',mtu=mtu)
+                else:
+                    self.emit('diagnostic',message=f'UDP 路径探测未获得确认，使用配置的 MTU {mtu}',mtu=mtu)
             self.emit('state',state='connecting',text='安装系统网卡与路由')
-            self.adapter=create_adapter('MultiVPN-'+self.profile.id[:8],cfg['vip'],routes,cfg.get('dns_servers',[]),self.profile.mtu)
+            self.adapter=create_adapter('MultiVPN-'+self.profile.id[:8],cfg['vip'],routes,cfg.get('dns_servers',[]),mtu)
             check_cancelled()
-            self.emit('connected',vip=cfg['vip'],interface=self.adapter.name,index=self.adapter.index,routes=routes,protocol=protocol,transport='udp' if udp else 'tcp')
+            self.emit('connected',vip=cfg['vip'],interface=self.adapter.name,index=self.adapter.index,routes=routes,protocol=protocol,transport='udp' if udp else 'tcp',mtu=mtu)
             self.emit('state',state='connected',text='已连接 · 系统内网路由已就绪')
             self.forward(control,data,protocol,uid,token,udp)
         except Cancelled:pass
@@ -128,6 +136,7 @@ class Session(threading.Thread):
         except Exception as exc:self.emit('error',message=str(exc),error_type=type(exc).__name__)
         finally:
             self.password=''
+            if udp:udp.close()
             if self.adapter:
                 try:
                     with cancellation(None):self.adapter.close()
@@ -196,12 +205,14 @@ class Session(threading.Thread):
             udp.wait_for_probe(sock)
         except OSError:
             sock.close()
+            udp.close()
             check_cancelled()
             control.sendall(p.legacy_frame(16, user_id=uid))
             self.emit('diagnostic', message='UDP 探测未通过，当前会话已切回 TLS')
             return None,control
         except BaseException:
             sock.close()
+            udp.close()
             raise
         self.sockets.append(sock)
         self.emit('diagnostic', message='旧版 UDP 探测成功')
@@ -337,6 +348,7 @@ class Session(threading.Thread):
                     self.emit('diagnostic',message='正在重新建立 UDP 数据通道',error_type=udp_failure)
                 else:
                     writers[control].enqueue(p.legacy_frame(16,user_id=uid))
+                    udp.close()
                     udp=None;data=control;repair_until=None;fallback_pending=True
                     self.emit('transport_changed',transport='tcp',message='UDP 通道失效，当前会话切回 TLS',error_type=udp_failure)
             if repair_until is not None and now>=next_probe:

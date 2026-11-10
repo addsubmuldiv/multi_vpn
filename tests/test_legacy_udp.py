@@ -2,6 +2,7 @@ from collections import deque
 from io import BytesIO
 import socket
 import struct
+import sys
 import threading
 from types import SimpleNamespace
 
@@ -9,6 +10,7 @@ from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 import pytest
 
 from multi_vpn.legacy_udp import LegacyUdp, PREFIX
+import multi_vpn.legacy_udp as udp_implementation
 import multi_vpn.session as implementation
 from multi_vpn.model import Profile, RouteRegistry, Store
 from multi_vpn.protocol import legacy_frame
@@ -330,3 +332,51 @@ def test_udp_socket_error_rebuilds_once_with_live_control(monkeypatch, probe_suc
     assert recovered.closed is not probe_succeeds
     assert ('transport_changed' in events) is not probe_succeeds
     assert session.metrics['udp_repairs'] == 1
+
+
+@pytest.mark.skipif(sys.platform not in ('win32', 'darwin'), reason='uses a native IPv4 DF option')
+@pytest.mark.parametrize('echo_id,larger_recovers,expected', [
+    (True, False, 1320),
+    (True, True, 1360),
+    (False, False, None),
+])
+def test_path_mtu_requires_matching_probe_and_restores_socket(monkeypatch, echo_id, larger_recovers, expected):
+    udp = LegacyUdp(KEY, UID, VIP, GATEWAY)
+    sent = []
+
+    class Path:
+        df = 0
+        reply = None
+
+        def getsockopt(self, level, option):
+            assert level == socket.IPPROTO_IP
+            return self.df
+
+        def setsockopt(self, level, option, value):
+            self.df = value
+
+        def send(self, request):
+            assert self.df == 1
+            size, probe_id = struct.unpack_from('!HH', request, 30)
+            sent.append((size, probe_id))
+            assert len(request) == 48 + (size - 20 + 15) // 16 * 16
+            if size <= 1320 or (larger_recovers and size == 1360 and len(sent) == 4):
+                ack = bytearray(request[28:48])
+                struct.pack_into('!HH', ack, 2, 36, probe_id if echo_id else 0x1234)
+                self.reply = from_gateway(ack, legacy_frame(15, user_id=UID))
+            return len(request)
+
+        def recv(self, size):
+            result, self.reply = self.reply, None
+            return result
+
+    def ready(path, writing, deadline):
+        if path.reply is None:
+            raise TimeoutError
+
+    path = Path()
+    monkeypatch.setattr(udp_implementation, 'wait_ready', ready)
+    assert udp.discover_path_mtu(path, 1400) == expected
+    assert path.df == 0
+    assert len({probe_id for _, probe_id in sent}) == len(sent)
+    assert all(probe_id != 0x1234 for _, probe_id in sent)

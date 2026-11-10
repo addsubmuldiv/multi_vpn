@@ -56,6 +56,9 @@ class ProfileDialog(QDialog):
         layout.addRow(self.legacy_udp)
         self.mtu=QSpinBox();self.mtu.setRange(576,1400);self.mtu.setValue(profile.mtu)
         layout.addRow('隧道 MTU',self.mtu)
+        self.auto_mtu=QCheckBox('连接时探测 UDP 路径 MTU（实验）')
+        self.auto_mtu.setChecked(profile.auto_mtu)
+        layout.addRow(self.auto_mtu)
         self.buttons=QDialogButtonBox(QDialogButtonBox.Save|QDialogButtonBox.Cancel)
         self.buttons.accepted.connect(self.accept);self.buttons.rejected.connect(self.reject);layout.addRow(self.buttons)
     def accept(self):
@@ -68,6 +71,7 @@ class ProfileDialog(QDialog):
         self.profile.host=self.host.text().strip();self.profile.port=self.port.value();self.profile.username=self.username.text().strip()
         self.profile.legacy_udp=self.legacy_udp.isChecked()
         self.profile.mtu=self.mtu.value()
+        self.profile.auto_mtu=self.auto_mtu.isChecked()
         super().accept()
 
 class Window(QMainWindow):
@@ -272,6 +276,7 @@ class Window(QMainWindow):
         text=f'网关：{p.host}:{p.port}\n账号：{p.username}'
         if d:text+=f"\n虚拟 IP：{d['vip']}\n系统网卡：{d['interface']}\n内网路由："+', '.join(d['routes'])
         if d.get('transport'):text+='\n数据通道：'+('UDP' if d['transport']=='udp' else 'TLS / TCP')
+        if d.get('mtu'):text+=f"\n隧道 MTU：{d['mtu']}"
         self.info.setText(text)
         logs='\n'.join(self.log_lines.get(p.id,[]))
         if self.logs.toPlainText()!=logs:
