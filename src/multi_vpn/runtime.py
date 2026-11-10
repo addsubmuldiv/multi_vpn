@@ -127,7 +127,9 @@ def relaunch_args(data_dir):
 def frozen_self_test(report=None):
     from PySide6.QtWidgets import QApplication
     from . import wire,protocol,session
+    from .updater import release_tls_context
     import keyring
+    release_tls_context()
     root=resource_root()
     if not (root/'assets/icon.png').is_file():raise RuntimeError('Missing bundled icon')
     if sys.platform=='win32':

@@ -17,6 +17,8 @@ authors and licenses; they do not imply affiliation or endorsement.
   distribution license texts are included in `licenses/`.
 - **cryptography and its runtime dependencies** — upstream authors. Original
   distribution license texts are included in `licenses/`.
+- **certifi** — Certifi contributors and Mozilla. The bundled certificate
+  authority list is distributed under MPL 2.0.
 - **Wintun 0.14.1**, Windows only — WireGuard LLC; upstream prebuilt distribution
   terms are in `vendor/WINTUN-LICENSE.txt`, also bundled with the application.
   Source: https://www.wintun.net/ .

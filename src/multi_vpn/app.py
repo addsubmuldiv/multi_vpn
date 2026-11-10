@@ -10,6 +10,7 @@ from .runtime import resource_root,relaunch_args
 from . import __version__
 from .diagnostics import EventLog
 from .presentation import STATES,STYLE,state_icon,badged_icon,set_state
+from .update_ui import UpdateController
 
 class Signals(QObject):
     message=Signal(str,str,dict)
@@ -130,6 +131,7 @@ class Window(QMainWindow):
         self._confirmation_dialog=None
         self.exit_timer=QTimer(self);self.exit_timer.setInterval(100);self.exit_timer.timeout.connect(self.close)
         self.setup_tray()
+        self.updates=UpdateController(self,footer)
         self.log_lines={};self.populate()
         self.timer=QTimer(self);self.timer.timeout.connect(self.refresh);self.timer.start(1000)
         QApplication.instance().installEventFilter(self)
@@ -395,6 +397,12 @@ class Window(QMainWindow):
         args=subprocess.list2cmdline(relaunch_args(self.store.path.parent))
         result=ctypes.windll.shell32.ShellExecuteW(None,'runas',sys.executable,args,os.getcwd(),1)
         if result>32:self.begin_exit()
+    def resume_after_failed_exit(self,message):
+        self.exit_timer.stop();self._closing=False;self._shutdown_started=None
+        self.updates.install_pending=False
+        self.setEnabled(True);self.exit_action.setEnabled(True);self.show_window()
+        self.lifecycle_status.setText(message)
+        self.refresh()
     def closeEvent(self,event):
         if self._shutdown_complete:event.accept();return
         if not self._closing:
@@ -411,13 +419,17 @@ class Window(QMainWindow):
         if active:
             event.ignore()
             if time.monotonic()-self._shutdown_started>=self.SHUTDOWN_TIMEOUT:
-                self.exit_timer.stop();self._closing=False;self._shutdown_started=None
-                self.setEnabled(True);self.exit_action.setEnabled(True);self.show_window()
-                self.lifecycle_status.setText('部分连接清理超时，程序已保留。请检查系统网络状态后重试退出；连接仍在停止中。')
-                self.refresh()
+                self.resume_after_failed_exit('部分连接清理超时，程序已保留。请检查系统网络状态后重试退出；连接仍在停止中。')
                 return
             if not self.exit_timer.isActive():self.exit_timer.start()
             return
+        try:
+            self.updates.launch_pending()
+        except Exception:
+            event.ignore()
+            self.resume_after_failed_exit('安装向导未能启动。请点击安装按钮重试。')
+            return
+        self.updates.stop()
         self.exit_timer.stop();self.timer.stop();self.tray.hide()
         self.event_log.close();self._shutdown_complete=True;event.accept()
         QApplication.instance().quit()

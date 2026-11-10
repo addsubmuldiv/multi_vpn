@@ -1,5 +1,17 @@
 # Changes
 
+## 0.2.4
+
+- Check for updates at startup and daily at 10:00 local time. Add a manual
+  update check in the main window.
+- Download the installer for the current platform from GitHub Releases and
+  verify its SHA256 before offering to launch it.
+- Confirm before disconnecting VPNs and wait for connection cleanup before
+  opening the installer.
+- Recover legacy UDP within the current session before falling back to TLS.
+  Add configurable tunnel MTU, optional UDP path MTU probing, and reuse native
+  AES keys when available.
+
 ## 0.2.3
 
 - Statically link OpenSSL for the Intel macOS build to avoid a bundled library

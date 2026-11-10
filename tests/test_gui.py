@@ -81,6 +81,47 @@ def establish(window):
     return session
 
 
+def test_update_does_not_install_until_confirmed_and_vpn_is_cleaned(gui, tmp_path, monkeypatch):
+    from PySide6.QtTest import QTest
+    from PySide6.QtWidgets import QMessageBox
+    from multi_vpn import updater
+
+    app, window = gui
+    vpn = establish(window)
+    release = updater.ReleaseInstaller('0.2.99', 'setup.exe', 'https://github.com/', 1, '0' * 64)
+    package = tmp_path / 'setup.exe'
+    package.write_bytes(b'x')
+    launched = []
+    monkeypatch.setattr(updater, 'check_update', lambda version: release)
+    monkeypatch.setattr(updater, 'download_installer', lambda *args: package)
+    monkeypatch.setattr(updater, 'launch_installer', launched.append)
+    monkeypatch.setattr(QMessageBox, 'question', lambda *args: QMessageBox.Yes)
+    monkeypatch.setattr(window, 'confirm_connection_action', lambda exiting: False)
+
+    window.updates.automatic_check()
+    for _ in range(100):
+        if window.updates.release:
+            break
+        QTest.qWait(10)
+    assert window.updates.release == release
+    assert window.updates.installer is None and not vpn.stopped
+
+    window.updates.button.click()
+    for _ in range(100):
+        if window.updates.installer:
+            break
+        QTest.qWait(10)
+    assert window.updates.installer == package
+    assert not vpn.stopped and not launched
+
+    monkeypatch.setattr(window, 'confirm_connection_action', lambda exiting: True)
+    window.updates.button.click()
+    assert vpn.stopped and not launched
+    vpn.finish()
+    window.close()
+    assert launched == [package] and window._shutdown_complete
+
+
 def test_connection_feedback_and_disabled_success_color(gui):
     app,window=gui
     window.connect_button.click()
