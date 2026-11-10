@@ -1,6 +1,11 @@
 # Changes
 
-## 0.2.2
+## 0.2.3
+
+- Statically link OpenSSL for the Intel macOS build to avoid a bundled library
+  conflict at startup. Include the VPN changes listed below for 0.2.2.
+
+## 0.2.2 (unpublished)
 
 - Prefer UDP on compatible legacy gateways. Fall back to TLS on negotiation,
   probe, or liveness failures using the existing authentication session.
