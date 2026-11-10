@@ -24,17 +24,23 @@ class TunnelReader:
         self.buffer.extend(chunk)
         if len(self.buffer)>2*(65535+16):raise BufferError('隧道报文接收缓冲区超限')
         frames=[];header=16 if self.protocol=='legacy' else 8
-        while len(self.buffer)>=header:
-            if self.protocol=='legacy':
-                first,second,user,command,size=struct.unpack_from('!IIIHH',self.buffer)
-                if (first,second)!=(0xfefcefbe,0xc192a4d6):raise ValueError('无效的数据报头')
-            else:
-                magic,version,command,size=struct.unpack_from('!4sBBH',self.buffer)
-                if magic!=b'\xc1\x92\xa4\xd6' or version!=1:raise ValueError('无效的新版数据报头')
-            if len(self.buffer)<header+size:break
-            payload=bytes(self.buffer[header:header+size]);del self.buffer[:header+size]
-            if self.protocol=='v1' and command==0x66 and len(payload)<8:raise ValueError('新版数据报缺少保留字段')
-            frames.append((command,payload));self.started=self.clock() if self.buffer else None
+        offset=0
+        with memoryview(self.buffer) as buffer:
+            while len(buffer)-offset>=header:
+                if self.protocol=='legacy':
+                    first,second,user,command,size=struct.unpack_from('!IIIHH',buffer,offset)
+                    if (first,second)!=(0xfefcefbe,0xc192a4d6):raise ValueError('无效的数据报头')
+                else:
+                    magic,version,command,size=struct.unpack_from('!4sBBH',buffer,offset)
+                    if magic!=b'\xc1\x92\xa4\xd6' or version!=1:raise ValueError('无效的新版数据报头')
+                end=offset+header+size
+                if end>len(buffer):break
+                if self.protocol=='v1' and command==0x66 and size<8:raise ValueError('新版数据报缺少保留字段')
+                frames.append((command,bytes(buffer[offset+header:end])))
+                offset=end
+        if offset:
+            del self.buffer[:offset]
+            self.started=self.clock() if self.buffer else None
         return frames
 
 class ReceiveQueue:

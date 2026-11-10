@@ -6,6 +6,7 @@ import struct
 
 MAGIC = bytes.fromhex('c192a4d6')
 HEADER = struct.Struct('!4sBBH')
+DATA_HEADER = struct.Struct('!4sBBH8x')
 
 @dataclass(frozen=True)
 class Frame:
@@ -162,7 +163,10 @@ def validate_ipv4(packet):
     return packet
 
 def data_frame(packet):
-    return encode_frame(0x66, bytes(8) + validate_ipv4(packet))
+    packet = validate_ipv4(packet)
+    if len(packet) > 65535 - 8:
+        raise ValueError('V1 data payload out of range')
+    return DATA_HEADER.pack(MAGIC, 1, 0x66, len(packet) + 8) + packet
 
 def decode_data(frame):
     if frame.command != 0x66 or len(frame.payload) < 8:

@@ -8,6 +8,7 @@ from pathlib import Path
 class EventLog:
     fields={'state','error_type','protocol','transport','tx','rx','received','pending_rx','rx_backpressure','tx_backpressure','send_queue','last_receive_age','last_gateway_age','rx_queue_age','tx_queue_age','partial_frame_bytes','log_dropped','udp_invalid'}
     fields.update({'tunnel_tx_bytes','tunnel_tx_frames','tunnel_rx_bytes','discarded_tx','udp_acks','udp_repairs','last_control_age','mtu'})
+    fields.update({'last_tls_data_age','last_control_ack_age','last_data_ack_age','tls_control_acks','tls_data_acks','tls_data_repairs'})
     def __init__(self,directory,max_bytes=2*1024*1024,backups=3):
         self.path=Path(directory)/'multi-vpn.log';self.handler=None;self.error=None
         self.queue=queue.Queue(maxsize=256);self.stopping=threading.Event();self.worker=None

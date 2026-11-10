@@ -1,7 +1,8 @@
 """Per-session protocol and real OS packet forwarding; no shared tunnel state."""
 import hashlib,ipaddress,queue,select,socket,ssl,struct,threading,time,uuid
+from concurrent.futures import ThreadPoolExecutor
 from . import protocol as p
-from .wire import encode_frame,read_frame,FrameReader,parse_vip,auth_v1,validate_ipv4
+from .wire import encode_frame,read_frame,parse_vip,auth_v1,validate_ipv4,data_frame
 from .platforms import create_adapter,validate_mtu
 from .transport import TLSWriter,ReceiveQueue,ReceiveHealth,TunnelReader
 from .operations import Cancelled,cancellation,check_cancelled,resolve
@@ -11,6 +12,50 @@ from .legacy_udp import LegacyUdp
 class GatewayKickout(ConnectionError):
     def __init__(self):
         super().__init__('网关终止了会话（KICKOUT）')
+
+
+class DataRebind:
+    """Build a replacement V1 data socket without stalling the control loop."""
+    def __init__(self, open_data, token):
+        self.open_data=open_data
+        self.token=token
+        self.cancel=threading.Event()
+        self.executor=None
+        self.future=None
+
+    def __enter__(self):
+        return self
+
+    def start(self):
+        if self.executor is None:
+            self.executor=ThreadPoolExecutor(max_workers=1,thread_name_prefix='vpn-data-rebind')
+        self.future=self.executor.submit(self._connect)
+
+    def _connect(self):
+        with cancellation(self.cancel):
+            for attempt in range(2):
+                check_cancelled()
+                try:
+                    return self.open_data(self.token,timeout=4,read_timeout=4)
+                except (OSError, EOFError):
+                    if attempt==1:raise
+                    if self.cancel.wait(.5):raise Cancelled()
+
+    def take(self):
+        if self.future is not None and self.future.done():
+            future,self.future=self.future,None
+            return future.result()
+        return None
+
+    def __exit__(self,*exc):
+        if self.executor is None:return
+        self.cancel.set()
+        self.executor.shutdown(wait=True,cancel_futures=True)
+        try:
+            sock=self.take()
+            if sock:sock.close()
+        except Exception:
+            pass
 
 
 def legacy_exchange(control, uid, command, payload=b''):
@@ -111,8 +156,8 @@ class Session(threading.Thread):
                 cfg=parse_vip(reply.payload)
                 if cfg['result']!=0:raise RuntimeError('网关拒绝分配地址')
                 if cfg.get('tunnel_mode') not in (None,0,1):raise RuntimeError('暂不支持网关要求的 UDP 模式')
-                data=self.connect_tls();data.sendall(encode_frame(100,token));reply=read_frame(data.recv)
-                if reply.command!=100 or not reply.payload or reply.payload[0]!=0:raise RuntimeError('网关拒绝数据连接')
+                data=self.open_v1_data(token)
+                self.sockets.append(data)
             routes=routes_for(cfg,self.profile.host);self.registry.acquire(self.profile.id,routes)
             if self.cancel.is_set():raise Cancelled()
             mtu=validate_mtu(self.profile.mtu)
@@ -218,7 +263,24 @@ class Session(threading.Thread):
         self.emit('diagnostic', message='旧版 UDP 探测成功')
         return udp,sock
 
+    def open_v1_data(self,token,timeout=12,read_timeout=15):
+        sock=p.tls_connect(self.profile.host,self.profile.port,self.profile.pin,
+                           timeout=timeout,read_timeout=read_timeout)
+        try:
+            sock.sendall(encode_frame(0x64,token))
+            reply=read_frame(sock.recv)
+            if reply.command!=0x64 or not reply.payload or reply.payload[0]!=0:
+                raise p.ProtocolError('网关拒绝绑定 TLS 数据通道')
+            return sock
+        except BaseException:
+            sock.close()
+            raise
+
     def forward(self,control,data,protocol,uid,token,udp=None):
+        with DataRebind(self.open_v1_data,token) as rebind:
+            self._forward(control,data,protocol,uid,token,udp,rebind)
+
+    def _forward(self,control,data,protocol,uid,token,udp,rebind):
         sockets=dict.fromkeys((control,data))
         for sock in sockets:sock.setblocking(False)
         udp_sock=data if udp else None
@@ -231,60 +293,88 @@ class Session(threading.Thread):
         pending=ReceiveQueue();health=ReceiveHealth(stats);received=0
         last_gateway=stats;last_udp=stats;last_control=None
         udp_invalid=udp_acks=0
+        last_data=last_control_ack=last_data_ack=None
+        tls_data_repairs=control_acks=data_acks=0
+        last_tls_repair=float('-inf')
         waitable=getattr(self.adapter,'read_waitable',None)
         acknowledge_read=getattr(self.adapter,'acknowledge_read',None)
         repair_until=None;last_repair=float('-inf');next_probe=0;repair_attempts=0
         wire_tx_closed=wire_frames_closed=closed_backpressure=discarded_tx=wire_rx=0
         fallback_pending=False
 
-        def retire_udp():
+        def retire_data(sock):
             nonlocal wire_tx_closed,wire_frames_closed,closed_backpressure,discarded_tx
-            writer=writers.pop(udp_sock)
+            writer=writers.pop(sock)
             wire_tx_closed+=writer.sent_bytes
             wire_frames_closed+=writer.sent_frames
             closed_backpressure+=writer.blocked
             discarded_tx+=writer.size
-            udp_sock.close()
-            if udp_sock in self.sockets:self.sockets.remove(udp_sock)
+            readers.pop(sock,None)
+            receive_wants_write.discard(sock)
+            sock.close()
+            if sock in self.sockets:self.sockets.remove(sock)
+
+        def handle_socket_error(sock,exc):
+            nonlocal udp_failure,tls_failure
+            if sock is udp_sock:
+                udp_failure=type(exc).__name__
+            elif protocol=='v1' and sock is data and sock is not control:
+                tls_failure=exc
+            else:raise exc
 
         def drive_writer(sock,writer,send):
-            nonlocal udp_failure
             try:
                 writer.check_timeout()
                 if send:writer.flush()
             except OSError as exc:
-                if sock is not udp_sock:raise
-                udp_failure=type(exc).__name__
+                handle_socket_error(sock,exc)
 
         while not self.cancel.is_set():
-            udp_failure=None
+            udp_failure=tls_failure=None
+            if data is None:
+                try:data=rebind.take()
+                except (OSError,EOFError,p.ProtocolError,ValueError) as exc:
+                    raise ConnectionError('TLS 数据通道未能重新绑定') from exc
+                if data is not None:
+                    self.sockets.append(data)
+                    data.setblocking(False)
+                    writers[data]=TLSWriter(data)
+                    readers[data]=TunnelReader(protocol)
+                    last_data=last_data_ack=None
+                    fallback_pending=True
+                    self.emit('diagnostic',message='TLS 数据通道已重新绑定')
+            data_writer=writers.get(data)
             delivered=pending.flush(self.adapter)
             self.rx+=delivered
+            if self.cancel.is_set():break
             packets=0
-            for _ in range(32 if repair_until is None else 0):
-                if writers[data].size>=1024*1024:break
+            for _ in range(32 if data_writer is not None and repair_until is None else 0):
+                if data_writer.size>=1024*1024:break
                 packet=self.adapter.read()
                 if packet is None:break
                 packets+=1
                 if not packet or packet[0]>>4!=4:continue
                 health.sent(time.monotonic())
                 if udp:frame=udp.encode(packet)
+                elif protocol=='v1':frame=data_frame(packet)
                 else:
                     validate_ipv4(packet)
-                    frame=p.legacy_frame(2,packet,uid) if protocol=='legacy' else encode_frame(0x66,bytes(8)+packet)
-                writers[data].enqueue(frame);self.tx+=len(packet)
+                    frame=p.legacy_frame(2,packet,uid)
+                data_writer.enqueue(frame);self.tx+=len(packet)
             for sock,writer in writers.items():drive_writer(sock,writer,writer.want is None)
-            for reader in readers.values():reader.check_timeout()
+            for sock,reader in readers.items():
+                try:reader.check_timeout()
+                except TimeoutError as exc:handle_socket_error(sock,exc)
             readable=[sock for sock in writers if sock is not data or pending.size<1024*1024]
             read_wait=list(dict.fromkeys(readable+[sock for sock,writer in writers.items() if writer.want=='read']))
-            if waitable is not None and repair_until is None and writers[data].size<1024*1024:
+            if waitable is not None and data_writer is not None and repair_until is None and data_writer.size<1024*1024:
                 read_wait.append(waitable)
             write_wait=[sock for sock,writer in writers.items() if writer.want=='write' or sock in receive_wants_write]
-            busy=(packets==32 and writers[data].want is None
+            busy=(packets==32 and data_writer.want is None
                   or delivered and pending.size
                   or any(writer.size and writer.want is None for writer in writers.values()))
             has_pending=any(has_plaintext(sock) for sock in readable)
-            timeout=0 if busy or has_pending or udp_failure else .005 if waitable is None or pending.size else .1
+            timeout=0 if busy or has_pending or udp_failure or tls_failure else .005 if waitable is None or pending.size else .1
             if read_wait or write_wait:ready,writable,_=select.select(read_wait,write_wait,[],timeout)
             else:self.cancel.wait(timeout);ready=[];writable=[]
             if acknowledge_read and waitable in ready and acknowledge_read() is False:
@@ -292,18 +382,23 @@ class Session(threading.Thread):
             for sock,writer in writers.items():
                 retry_read=writer.want=='read' and (sock in ready or has_plaintext(sock))
                 retry_write=writer.want=='write' and sock in writable
-                if (retry_read or retry_write) and not (sock is udp_sock and udp_failure):drive_writer(sock,writer,True)
+                failed=(sock is udp_sock and udp_failure) or (sock is data and tls_failure)
+                if (retry_read or retry_write) and not failed:drive_writer(sock,writer,True)
             for sock in readable:
                 if sock not in ready and not has_plaintext(sock) and not (sock in receive_wants_write and sock in writable):continue
-                for batch in range(32 if sock is udp_sock else 4):
+                v1_data=protocol=='v1' and sock is data and sock is not control
+                budget=256*1024
+                deadline=time.monotonic()+.002 if v1_data else None
+                for batch in range(32 if sock is udp_sock or v1_data else 4):
                     if sock is udp_sock and udp_failure:break
+                    if v1_data and tls_failure:break
                     if sock is data and pending.size>=1024*1024:break
+                    if v1_data and batch and (budget<=0 or time.monotonic()>=deadline):break
                     try:chunk=sock.recv(65536)
                     except ssl.SSLWantWriteError:receive_wants_write.add(sock);break
                     except (TimeoutError,ssl.SSLWantReadError,BlockingIOError):receive_wants_write.discard(sock);break
                     except OSError as exc:
-                        if sock is not udp_sock:raise
-                        udp_failure=type(exc).__name__;break
+                        handle_socket_error(sock,exc);break
                     wire_rx+=len(chunk)
                     if sock is udp_sock:
                         try:packet=udp.decode(chunk)
@@ -318,24 +413,45 @@ class Session(threading.Thread):
                             pending.enqueue(packet);received+=len(packet);health.received(last_udp)
                         else:udp_acks+=1
                         continue
-                    if not chunk:raise ConnectionError('网关关闭连接')
+                    if not chunk:
+                        handle_socket_error(sock,ConnectionError('网关关闭连接'))
+                        break
                     receive_wants_write.discard(sock);last_gateway=time.monotonic()
                     if sock is control:last_control=last_gateway
+                    if v1_data:last_data=last_gateway
+                    budget-=len(chunk)
                     for cmd,payload in readers[sock].feed(chunk):
                         if cmd==(2 if protocol=='legacy' else 0x66) and not udp:
                             packet=payload if protocol=='legacy' else payload[8:]
                             validate_ipv4(packet);pending.enqueue(packet);received+=len(packet);health.received(time.monotonic())
                             if fallback_pending:
-                                self.emit('diagnostic',message='切回 TLS 后已收到内网数据')
+                                self.emit('diagnostic',message='恢复后的 TLS 通道已收到内网数据')
                                 fallback_pending=False
+                        elif protocol=='v1' and sock is control and cmd==6:
+                            control_acks+=1;last_control_ack=last_gateway
+                        elif v1_data and cmd==0x65:
+                            data_acks+=1;last_data_ack=last_gateway
                         elif protocol=='legacy' and cmd==8:raise GatewayKickout()
                         elif protocol=='v1' and cmd==50:raise RuntimeError('网关终止了会话')
-                    if not has_plaintext(sock):break
+                    if not v1_data and not has_plaintext(sock):break
             now=time.monotonic()
+            if self.cancel.is_set():break
+            if (protocol=='v1' and data is not None and last_data_ack is not None
+                    and not pending.size and now-last_data>=40 and tls_failure is None):
+                tls_failure=TimeoutError('TLS 数据通道长时间没有回包')
+            if tls_failure is not None:
+                if now-last_tls_repair<30:
+                    raise ConnectionError('TLS 数据通道重绑后再次失效') from tls_failure
+                last_tls_repair=now;tls_data_repairs+=1
+                retire_data(data)
+                data=None
+                rebind.start()
+                self.emit('diagnostic',message='正在用当前会话重新绑定 TLS 数据通道',
+                          error_type=type(tls_failure).__name__)
             udp_deadline=repair_until if repair_until is not None else last_udp+40
             if udp and (udp_failure or now>=udp_deadline):
                 was_repairing=repair_until is not None
-                retire_udp()
+                retire_data(udp_sock)
                 udp_sock=None
                 if udp.endpoint and not was_repairing and now-last_repair>=60:
                     last_repair=now;repair_attempts+=1
@@ -358,7 +474,7 @@ class Session(threading.Thread):
             if now>=heartbeat:
                 counter+=1
                 writers[control].enqueue(p.legacy_frame(7,user_id=uid) if protocol=='legacy' else encode_frame(6,token+struct.pack('!I',counter)))
-                if protocol=='v1':writers[data].enqueue(encode_frame(0x65))
+                if protocol=='v1' and data is not None:writers[data].enqueue(encode_frame(0x65))
                 if udp and repair_until is None:writers[data].enqueue(udp.probe())
                 heartbeat=now+8
             if now-stats>=1:
@@ -377,5 +493,9 @@ class Session(threading.Thread):
                     tunnel_tx_frames=wire_frames_closed+sum(writer.sent_frames for writer in writers.values()),
                     tunnel_rx_bytes=wire_rx,discarded_tx=discarded_tx,
                     last_control_age=round(now-last_control,3) if last_control is not None else None,
+                    last_tls_data_age=round(now-last_data,3) if last_data is not None else None,
+                    last_control_ack_age=round(now-last_control_ack,3) if last_control_ack is not None else None,
+                    last_data_ack_age=round(now-last_data_ack,3) if last_data_ack is not None else None,
+                    tls_control_acks=control_acks,tls_data_acks=data_acks,tls_data_repairs=tls_data_repairs,
                 )
                 stats=now
