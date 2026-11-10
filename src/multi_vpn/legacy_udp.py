@@ -20,9 +20,22 @@ class LegacyUdp:
     def __init__(self, key, user_id, vip, gateway):
         self.algorithm = algorithms.AES128(key)
         self.user_id = struct.pack('!I', user_id)
+        self.endpoint = None
         self.probe_header = bytes.fromhex('458000241234000080110000') + (
             socket.inet_aton(vip) + socket.inet_aton(gateway)
         )
+
+    def open_socket(self):
+        local, remote = self.endpoint
+        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        try:
+            sock.bind((local, 0))
+            sock.connect(remote)
+            sock.setblocking(False)
+            return sock
+        except BaseException:
+            sock.close()
+            raise
 
     def _encode(self, header, payload):
         iv = self.user_id + os.urandom(12)

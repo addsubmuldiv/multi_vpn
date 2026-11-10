@@ -33,7 +33,7 @@ def _receive_helper_message(connection):
         for fd in fds:os.close(fd)
         raise
 
-def macos_privileged_adapter(vip,routes):
+def macos_privileged_adapter(vip,routes,mtu=1400):
     check_cancelled()
     prefix=[] if getattr(sys,'frozen',False) else ['-m','multi_vpn']
     helper=shlex.join([sys.executable,*prefix,'--network-helper'])
@@ -45,7 +45,7 @@ def macos_privileged_adapter(vip,routes):
         listener=socket.socket(socket.AF_UNIX,socket.SOCK_STREAM)
         try:
             listener.bind(path);os.chmod(path,0o600);listener.listen(1);listener.settimeout(.2)
-            request=json.dumps({'socket':path,'vip':vip,'routes':routes},separators=(',',':'))
+            request=json.dumps({'socket':path,'vip':vip,'routes':routes,'mtu':mtu},separators=(',',':'))
             command=f'printf %s {shlex.quote(request)} | {helper}'
             script='do shell script '+json.dumps(command)+' with administrator privileges'
             process=subprocess.Popen(['/usr/bin/osascript','-e',script],stdin=subprocess.DEVNULL,
@@ -96,7 +96,7 @@ def run_macos_network_helper():
             raise ValueError('invalid route list')
         control=socket.socket(socket.AF_UNIX,socket.SOCK_STREAM);control.connect(path)
         from .platforms.macos import create_root_adapter,close_root_adapter
-        tun,name,index,routes=create_root_adapter(request.get('vip'),request['routes'])
+        tun,name,index,routes=create_root_adapter(request.get('vip'),request['routes'],request.get('mtu',1400))
         _send_helper_message(control,{'name':name,'index':index},tun.fileno())
         while control.recv(1):pass
         return 0

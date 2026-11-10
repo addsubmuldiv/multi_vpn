@@ -78,6 +78,8 @@ class TLSWriter:
         self.queue=deque();self.offset=0;self.size=0;self.progress=clock()
         self.timestamps=deque();self.max_age=max_age;self.want=None
         self.blocked = 0
+        self.sent_bytes = 0
+        self.sent_frames = 0
         self.datagrams = datagrams
     @property
     def age(self):return self.clock()-self.timestamps[0] if self.timestamps else 0
@@ -103,4 +105,7 @@ class TLSWriter:
             if self.datagrams and n != len(self.queue[0]):
                 raise OSError('UDP 数据报未完整发送')
             self.want=None;self.progress=self.clock();self.offset+=n;self.size-=n
-            if self.offset==len(self.queue[0]):self.queue.popleft();self.timestamps.popleft();self.offset=0
+            self.sent_bytes += n
+            if self.offset==len(self.queue[0]):
+                self.sent_frames += 1
+                self.queue.popleft();self.timestamps.popleft();self.offset=0

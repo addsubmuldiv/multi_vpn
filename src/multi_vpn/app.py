@@ -54,6 +54,8 @@ class ProfileDialog(QDialog):
         self.legacy_udp=QCheckBox('旧版网关优先使用 UDP')
         self.legacy_udp.setChecked(profile.legacy_udp)
         layout.addRow(self.legacy_udp)
+        self.mtu=QSpinBox();self.mtu.setRange(576,1400);self.mtu.setValue(profile.mtu)
+        layout.addRow('隧道 MTU',self.mtu)
         self.buttons=QDialogButtonBox(QDialogButtonBox.Save|QDialogButtonBox.Cancel)
         self.buttons.accepted.connect(self.accept);self.buttons.rejected.connect(self.reject);layout.addRow(self.buttons)
     def accept(self):
@@ -65,6 +67,7 @@ class ProfileDialog(QDialog):
         self.profile.name=self.name.text().strip() or self.host.text().strip()
         self.profile.host=self.host.text().strip();self.profile.port=self.port.value();self.profile.username=self.username.text().strip()
         self.profile.legacy_udp=self.legacy_udp.isChecked()
+        self.profile.mtu=self.mtu.value()
         super().accept()
 
 class Window(QMainWindow):

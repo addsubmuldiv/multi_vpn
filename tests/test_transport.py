@@ -12,6 +12,8 @@ def test_partial_tls_writes_and_temporary_backpressure_do_not_duplicate_frames()
     sock=Socket();writer=TLSWriter(sock);writer.enqueue(b'first');writer.enqueue(b'second')
     for _ in range(4):writer.flush()
     assert sock.sent==b'firstsecond';assert writer.size==0
+    assert writer.sent_bytes==len(b'firstsecond')
+    assert writer.sent_frames==2
 
 def test_short_stall_survives_but_persistent_stall_fails():
     now=[0.];sock=Socket();writer=TLSWriter(sock,clock=lambda:now[0]);writer.enqueue(b'packet')

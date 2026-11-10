@@ -80,10 +80,11 @@ def test_existing_profiles_prefer_udp_unless_disabled(tmp_path, monkeypatch):
     assert control.sent == [legacy_frame(3, user_id=UID)]
 
 
-def test_probe_and_packet_through_udp_socket():
+@pytest.mark.parametrize('payload_size', [12, 1372])
+def test_probe_and_packet_through_udp_socket(payload_size):
     session = Session(Profile(), '', RouteRegistry(), lambda *args: None)
-    outgoing = icmp_echo(VIP, '192.0.2.22', payload=b'outgoing test')
-    incoming = icmp_echo('192.0.2.22', VIP, payload=b'incoming test')
+    outgoing = icmp_echo(VIP, '192.0.2.22', payload=b'>' * payload_size)
+    incoming = icmp_echo('192.0.2.22', VIP, payload=b'<' * payload_size)
     observed = deque()
     received = []
     packets = deque([outgoing])
@@ -138,6 +139,7 @@ def test_probe_and_packet_through_udp_socket():
             assert len(probe) == 64 and probe[:16] == PREFIX + struct.pack('!I', UID)
             assert probe[28:48] == bytes.fromhex('458000241234000080110000c000020a7f000001')
             assert packet[28:48] == outgoing[:20]
+            assert len(packet) + 28 <= 1500
             for wire, payload in [(probe, legacy_frame(14)), (packet, outgoing[20:])]:
                 decoder = Cipher(algorithms.AES128(KEY), modes.CBC(wire[12:28])).decryptor()
                 assert (decoder.update(wire[48:]) + decoder.finalize())[:len(payload)] == payload
@@ -258,3 +260,73 @@ def test_udp_timeout_switches_before_sending_tcp_data(monkeypatch):
     assert data.sent and data.closed
     assert control.sent.index(legacy_frame(16, user_id=UID)) < control.sent.index(legacy_frame(2, outgoing, UID))
     assert session.rx == len(incoming)
+
+
+@pytest.mark.parametrize('probe_succeeds', [True, False])
+def test_udp_socket_error_rebuilds_once_with_live_control(monkeypatch, probe_succeeds):
+    events = []
+    now = 0
+    session = Session(Profile(), '', RouteRegistry(), lambda _, event, fields: events.append(event))
+    udp = LegacyUdp(KEY, UID, VIP, GATEWAY)
+    udp.endpoint = (GATEWAY, (GATEWAY, 443))
+    incoming = icmp_echo('192.0.2.22', VIP)
+
+    class Socket:
+        def __init__(self, *replies):
+            self.sent = []
+            self.replies = deque(replies)
+            self.closed = False
+
+        def setblocking(self, enabled):pass
+        def pending(self):return 0
+        def close(self):self.closed = True
+        def send(self, payload):
+            self.sent.append(bytes(payload))
+            return len(payload)
+        def recv(self, size):
+            if not self.replies:raise BlockingIOError
+            reply = self.replies.popleft()
+            if isinstance(reply, Exception):raise reply
+            return reply
+
+    control = Socket()
+    failed = Socket(ConnectionResetError())
+    header = udp.probe_header
+    recovered = Socket(
+        from_gateway(header, legacy_frame(15, user_id=UID)),
+        from_gateway(incoming[:20], incoming[20:]),
+    ) if probe_succeeds else Socket()
+    replacement_attempts = []
+
+    def open_socket():
+        replacement_attempts.append(True)
+        return recovered
+
+    def poll(read, write, exceptional, timeout):
+        nonlocal now
+        now += 1
+        assert now < 20, 'repair never completed'
+        if control.sent and legacy_frame(16, user_id=UID) in control.sent and not probe_succeeds:
+            control.replies.append(legacy_frame(2, incoming, UID))
+        ready = [sock for sock in read if sock.replies and (sock is not recovered or recovered.sent)]
+        return ready, [], []
+
+    class Adapter:
+        def read(self):return None
+        def write(self, packet):
+            assert packet == incoming
+            session.stop()
+            return True
+
+    session.adapter = Adapter()
+    session.sockets = [control, failed]
+    monkeypatch.setattr(udp, 'open_socket', open_socket)
+    monkeypatch.setattr(implementation, 'time', SimpleNamespace(monotonic=lambda: now))
+    monkeypatch.setattr(implementation.select, 'select', poll)
+    session.forward(control, failed, 'legacy', UID, None, udp)
+    assert replacement_attempts == [True]
+    assert failed.closed and not control.closed
+    assert recovered.sent and session.rx == len(incoming)
+    assert recovered.closed is not probe_succeeds
+    assert ('transport_changed' in events) is not probe_succeeds
+    assert session.metrics['udp_repairs'] == 1

@@ -116,7 +116,7 @@ class Session(threading.Thread):
             routes=routes_for(cfg,self.profile.host);self.registry.acquire(self.profile.id,routes)
             if self.cancel.is_set():raise Cancelled()
             self.emit('state',state='connecting',text='安装系统网卡与路由')
-            self.adapter=create_adapter('MultiVPN-'+self.profile.id[:8],cfg['vip'],routes,cfg.get('dns_servers',[]))
+            self.adapter=create_adapter('MultiVPN-'+self.profile.id[:8],cfg['vip'],routes,cfg.get('dns_servers',[]),self.profile.mtu)
             check_cancelled()
             self.emit('connected',vip=cfg['vip'],interface=self.adapter.name,index=self.adapter.index,routes=routes,protocol=protocol,transport='udp' if udp else 'tcp')
             self.emit('state',state='connected',text='已连接 · 系统内网路由已就绪')
@@ -190,11 +190,9 @@ class Session(threading.Thread):
         port = struct.unpack_from('!H', port_reply)[0]
         gateway = control.getpeername()[0]
         udp = LegacyUdp(reply[4:20], uid, vip, gateway)
-        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        udp.endpoint = (control.getsockname()[0], (gateway, port))
+        sock = udp.open_socket()
         try:
-            sock.bind((control.getsockname()[0], 0))
-            sock.connect((gateway, port))
-            sock.setblocking(False)
             udp.wait_for_probe(sock)
         except OSError:
             sock.close()
@@ -210,82 +208,162 @@ class Session(threading.Thread):
         return udp,sock
 
     def forward(self,control,data,protocol,uid,token,udp=None):
-        for sock in set([control,data]):sock.setblocking(False)
+        sockets=dict.fromkeys((control,data))
+        for sock in sockets:sock.setblocking(False)
         udp_sock=data if udp else None
-        writers={s:TLSWriter(s,datagrams=s is udp_sock) for s in set([control,data])}
+        writers={s:TLSWriter(s,datagrams=s is udp_sock) for s in sockets}
         readers={sock:TunnelReader(protocol) for sock in writers if sock is not udp_sock}
         def has_plaintext(sock):
             return sock is not udp_sock and sock.pending()
         receive_wants_write=set()
         heartbeat=time.monotonic()+8;stats=time.monotonic();counter=0
         pending=ReceiveQueue();health=ReceiveHealth(stats);received=0
-        last_gateway=stats;last_udp=stats;udp_invalid=0
+        last_gateway=stats;last_udp=stats;last_control=None
+        udp_invalid=udp_acks=0
+        waitable=getattr(self.adapter,'read_waitable',None)
+        acknowledge_read=getattr(self.adapter,'acknowledge_read',None)
+        repair_until=None;last_repair=float('-inf');next_probe=0;repair_attempts=0
+        wire_tx_closed=wire_frames_closed=closed_backpressure=discarded_tx=wire_rx=0
+        fallback_pending=False
+
+        def retire_udp():
+            nonlocal wire_tx_closed,wire_frames_closed,closed_backpressure,discarded_tx
+            writer=writers.pop(udp_sock)
+            wire_tx_closed+=writer.sent_bytes
+            wire_frames_closed+=writer.sent_frames
+            closed_backpressure+=writer.blocked
+            discarded_tx+=writer.size
+            udp_sock.close()
+            if udp_sock in self.sockets:self.sockets.remove(udp_sock)
+
+        def drive_writer(sock,writer,send):
+            nonlocal udp_failure
+            try:
+                writer.check_timeout()
+                if send:writer.flush()
+            except OSError as exc:
+                if sock is not udp_sock:raise
+                udp_failure=type(exc).__name__
+
         while not self.cancel.is_set():
-            self.rx+=pending.flush(self.adapter)
-            for _ in range(32):
+            udp_failure=None
+            delivered=pending.flush(self.adapter)
+            self.rx+=delivered
+            packets=0
+            for _ in range(32 if repair_until is None else 0):
                 if writers[data].size>=1024*1024:break
                 packet=self.adapter.read()
                 if packet is None:break
+                packets+=1
                 if not packet or packet[0]>>4!=4:continue
-                validate_ipv4(packet)
                 health.sent(time.monotonic())
-                frame=udp.encode(packet) if udp else p.legacy_frame(2,packet,uid) if protocol=='legacy' else encode_frame(0x66,bytes(8)+packet)
+                if udp:frame=udp.encode(packet)
+                else:
+                    validate_ipv4(packet)
+                    frame=p.legacy_frame(2,packet,uid) if protocol=='legacy' else encode_frame(0x66,bytes(8)+packet)
                 writers[data].enqueue(frame);self.tx+=len(packet)
-            for writer in writers.values():
-                writer.check_timeout()
-                if writer.want is None:writer.flush()
+            for sock,writer in writers.items():drive_writer(sock,writer,writer.want is None)
             for reader in readers.values():reader.check_timeout()
             readable=[sock for sock in writers if sock is not data or pending.size<1024*1024]
             read_wait=list(dict.fromkeys(readable+[sock for sock,writer in writers.items() if writer.want=='read']))
+            if waitable is not None and repair_until is None and writers[data].size<1024*1024:
+                read_wait.append(waitable)
             write_wait=[sock for sock,writer in writers.items() if writer.want=='write' or sock in receive_wants_write]
+            busy=(packets==32 and writers[data].want is None
+                  or delivered and pending.size
+                  or any(writer.size and writer.want is None for writer in writers.values()))
             has_pending=any(has_plaintext(sock) for sock in readable)
-            if read_wait or write_wait:ready,writable,_=select.select(read_wait,write_wait,[],0 if has_pending else .005)
-            else:self.cancel.wait(.005);ready=[]
-            if not read_wait and not write_wait:writable=[]
+            timeout=0 if busy or has_pending or udp_failure else .005 if waitable is None or pending.size else .1
+            if read_wait or write_wait:ready,writable,_=select.select(read_wait,write_wait,[],timeout)
+            else:self.cancel.wait(timeout);ready=[];writable=[]
+            if acknowledge_read and waitable in ready and acknowledge_read() is False:
+                waitable=None
             for sock,writer in writers.items():
                 retry_read=writer.want=='read' and (sock in ready or has_plaintext(sock))
                 retry_write=writer.want=='write' and sock in writable
-                if retry_read or retry_write:writer.flush()
+                if (retry_read or retry_write) and not (sock is udp_sock and udp_failure):drive_writer(sock,writer,True)
             for sock in readable:
                 if sock not in ready and not has_plaintext(sock) and not (sock in receive_wants_write and sock in writable):continue
-                for batch in range(4):
+                for batch in range(32 if sock is udp_sock else 4):
+                    if sock is udp_sock and udp_failure:break
                     if sock is data and pending.size>=1024*1024:break
                     try:chunk=sock.recv(65536)
                     except ssl.SSLWantWriteError:receive_wants_write.add(sock);break
                     except (TimeoutError,ssl.SSLWantReadError,BlockingIOError):receive_wants_write.discard(sock);break
+                    except OSError as exc:
+                        if sock is not udp_sock:raise
+                        udp_failure=type(exc).__name__;break
+                    wire_rx+=len(chunk)
                     if sock is udp_sock:
                         try:packet=udp.decode(chunk)
                         except ValueError:
                             udp_invalid+=1
                             continue
                         last_udp=last_gateway=time.monotonic()
+                        if repair_until is not None:
+                            repair_until=None
+                            self.emit('diagnostic',message='UDP 数据通道已重新建立')
                         if packet is not None:
                             pending.enqueue(packet);received+=len(packet);health.received(last_udp)
+                        else:udp_acks+=1
                         continue
                     if not chunk:raise ConnectionError('网关关闭连接')
                     receive_wants_write.discard(sock);last_gateway=time.monotonic()
+                    if sock is control:last_control=last_gateway
                     for cmd,payload in readers[sock].feed(chunk):
                         if cmd==(2 if protocol=='legacy' else 0x66) and not udp:
                             packet=payload if protocol=='legacy' else payload[8:]
                             validate_ipv4(packet);pending.enqueue(packet);received+=len(packet);health.received(time.monotonic())
+                            if fallback_pending:
+                                self.emit('diagnostic',message='切回 TLS 后已收到内网数据')
+                                fallback_pending=False
                         elif protocol=='legacy' and cmd==8:raise GatewayKickout()
                         elif protocol=='v1' and cmd==50:raise RuntimeError('网关终止了会话')
                     if not has_plaintext(sock):break
             now=time.monotonic()
-            if udp and now-last_udp>=40:
-                writers[control].enqueue(p.legacy_frame(16,user_id=uid))
-                del writers[udp_sock]
-                udp_sock.close()
-                self.sockets.remove(udp_sock)
-                udp=None;udp_sock=None;data=control
-                self.emit('transport_changed',transport='tcp',message='UDP 隧道 40 秒未收到网关回应，当前会话切回 TLS')
+            udp_deadline=repair_until if repair_until is not None else last_udp+40
+            if udp and (udp_failure or now>=udp_deadline):
+                was_repairing=repair_until is not None
+                retire_udp()
+                udp_sock=None
+                if udp.endpoint and not was_repairing and now-last_repair>=60:
+                    last_repair=now;repair_attempts+=1
+                    try:udp_sock=udp.open_socket()
+                    except OSError as exc:udp_failure=type(exc).__name__
+                if udp_sock is not None:
+                    data=udp_sock;self.sockets.append(data)
+                    writers[data]=TLSWriter(data,datagrams=True)
+                    repair_until=now+6;next_probe=now
+                    self.emit('diagnostic',message='正在重新建立 UDP 数据通道',error_type=udp_failure)
+                else:
+                    writers[control].enqueue(p.legacy_frame(16,user_id=uid))
+                    udp=None;data=control;repair_until=None;fallback_pending=True
+                    self.emit('transport_changed',transport='tcp',message='UDP 通道失效，当前会话切回 TLS',error_type=udp_failure)
+            if repair_until is not None and now>=next_probe:
+                writers[data].enqueue(udp.probe());next_probe=now+2
             state=health.check(now)
             if state:self.emit('state',state=state,text='已发出内网数据，但超过 30 秒未收到内网数据，请检查链路或目标服务' if state=='degraded' else '已恢复接收内网数据 · 系统内网路由已就绪')
             if now>=heartbeat:
                 counter+=1
                 writers[control].enqueue(p.legacy_frame(7,user_id=uid) if protocol=='legacy' else encode_frame(6,token+struct.pack('!I',counter)))
                 if protocol=='v1':writers[data].enqueue(encode_frame(0x65))
-                if udp:writers[data].enqueue(udp.probe())
+                if udp and repair_until is None:writers[data].enqueue(udp.probe())
                 heartbeat=now+8
             if now-stats>=1:
-                self.emit('traffic',tx=self.tx,rx=self.rx,received=received,pending_rx=pending.size,rx_backpressure=pending.blocked,tx_backpressure=sum(writer.blocked for writer in writers.values()),send_queue=sum(writer.size for writer in writers.values()),last_receive_age=round(now-health.last_receive,3),last_gateway_age=round(now-last_gateway,3),rx_queue_age=round(pending.age,3),tx_queue_age=round(max(writer.age for writer in writers.values()),3),partial_frame_bytes=sum(reader.size for reader in readers.values()),udp_invalid=udp_invalid);stats=now
+                self.emit(
+                    'traffic',tx=self.tx,rx=self.rx,received=received,pending_rx=pending.size,
+                    rx_backpressure=pending.blocked,
+                    tx_backpressure=closed_backpressure+sum(writer.blocked for writer in writers.values()),
+                    send_queue=sum(writer.size for writer in writers.values()),
+                    last_receive_age=round(now-health.last_receive,3),
+                    last_gateway_age=round(now-last_gateway,3),
+                    rx_queue_age=round(pending.age,3),
+                    tx_queue_age=round(max(writer.age for writer in writers.values()),3),
+                    partial_frame_bytes=sum(reader.size for reader in readers.values()),
+                    udp_invalid=udp_invalid,udp_acks=udp_acks,udp_repairs=repair_attempts,
+                    tunnel_tx_bytes=wire_tx_closed+sum(writer.sent_bytes for writer in writers.values()),
+                    tunnel_tx_frames=wire_frames_closed+sum(writer.sent_frames for writer in writers.values()),
+                    tunnel_rx_bytes=wire_rx,discarded_tx=discarded_tx,
+                    last_control_age=round(now-last_control,3) if last_control is not None else None,
+                )
+                stats=now
