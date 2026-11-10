@@ -1,6 +1,14 @@
 # Changes
 
-## Unreleased
+## 0.2.2
+
+- Prefer UDP on compatible legacy gateways. Fall back to TLS on negotiation,
+  probe, or liveness failures using the existing authentication session.
+- Show the active data transport and record socket send backpressure in diagnostics.
+- Handle legacy gateway kickout messages and preserve the source checkout when
+  restarting as administrator on Windows.
+
+## 0.2.1
 
 - Hide to the system tray on window close while keeping VPN sessions running;
   retain normal minimize behavior. Add tray restore/disconnect-all/exit actions,
