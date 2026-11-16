@@ -9,7 +9,7 @@ from .session import Session
 from .runtime import resource_root,relaunch_args
 from . import __version__
 from .diagnostics import EventLog
-from .presentation import STATES,STYLE,state_icon,badged_icon,set_state
+from .presentation import STATES,install_style,state_icon,badged_icon,set_state
 from .update_ui import UpdateController
 
 class Signals(QObject):
@@ -264,7 +264,7 @@ class Window(QMainWindow):
         self.refresh_summary()
         self.status.setText(appearance.title);self.status_icon.setPixmap(self.state_icons[state].pixmap(28,28))
         self.status_detail.setText(detail)
-        set_state(self.status_panel,state);set_state(self.status,state)
+        set_state(self.status_panel,state)
         self.progress.setVisible(state in {'connecting','disconnecting'})
         self.duration.setVisible(bool(p) and state in {'connected','degraded'})
         if p and p.id in self.connected_since:
@@ -446,5 +446,5 @@ def main():
     app=QApplication([sys.argv[0],*qt_args]);app.setApplicationName('MultiVPN');app.setApplicationVersion(__version__)
     app.setQuitOnLastWindowClosed(False)
     app.setWindowIcon(QIcon(str(resource_root()/'assets/icon.png')))
-    app.setStyle('Fusion');app.setStyleSheet(STYLE)
+    install_style(app)
     window=Window();window.show();sys.exit(app.exec())

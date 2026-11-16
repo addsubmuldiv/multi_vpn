@@ -79,33 +79,36 @@ def set_state(widget, state):
 
 STYLE = '''
     QWidget { font-size: 14px; }
-    QMainWindow { background: #f4f6fa; }
-    QLabel#title { font-size: 28px; font-weight: 700; color: #17243a; }
+    QLabel#title { font-size: 28px; font-weight: 700; }
     QLabel#heading { font-size: 22px; font-weight: 600; }
     QLabel#connectionStatus { font-size: 23px; font-weight: 700; }
-    QLabel#statusDetail, QLabel#duration { color: #475569; }
     QLabel#summary { font-weight: 600; padding: 6px 10px; border-radius: 6px; }
-    QWidget#statusPanel { border: 1px solid #d5dce7; border-radius: 8px; }
-    QPushButton { padding: 9px 16px; border: 1px solid #cbd3df; border-radius: 6px; background: white; }
-    QPushButton:disabled { color: #94a3b8; background: #e8edf3; }
-    QPushButton#primary { background: #2563eb; color: white; border-color: #2563eb; font-weight: 600; }
+    QWidget#statusPanel { border: 1px solid palette(mid); border-radius: 8px; }
+    QPushButton { padding: 9px 16px; }
+    QPushButton#primary { background: #2563eb; color: white; border: 1px solid #2563eb; border-radius: 6px; font-weight: 600; }
     QPushButton#primary:hover { background: #1d4ed8; }
-    QPushButton#primary:disabled { background: #e2e8f0; color: #475569; border-color: #cbd3df; }
-    QPushButton#exitButton { background: transparent; border: none; color: #64748b; padding: 6px 10px; }
+    QPushButton#primary:disabled { background: palette(button); color: palette(button-text); border-color: palette(mid); }
+    QPushButton#exitButton { background: transparent; border: none; padding: 6px 10px; }
     QPushButton#exitButton:hover { background: #fef2f2; color: #b91c1c; }
-    QProgressBar { border: none; background: #dbeafe; border-radius: 2px; }
+    QProgressBar { border: none; background: palette(mid); border-radius: 2px; }
     QProgressBar::chunk { background: #2563eb; }
-    QLineEdit,QSpinBox,QListWidget,QPlainTextEdit { background: white; border: 1px solid #d5dce7; border-radius: 5px; padding: 7px; }
+    QLineEdit,QSpinBox,QListWidget,QPlainTextEdit { padding: 7px; }
     QListWidget::item { padding: 12px 4px; }
-    QListWidget::item:selected { background: #dbe9ff; color: #153b77; }
 '''
 for name, appearance in STATES.items():
     STYLE += f'''
-        QWidget#statusPanel[state="{name}"] {{ background: {appearance.background}; border-color: {appearance.color}; }}
-        QLabel#connectionStatus[state="{name}"] {{ color: {appearance.color}; }}
+        QWidget#statusPanel[state="{name}"] {{ border-color: {appearance.color}; }}
         QLabel#summary[state="{name}"] {{ color: {appearance.color}; background: {appearance.background}; }}
     '''
     if name in {'connected', 'degraded', 'connecting', 'sms', 'certificate'}:
         STYLE += f'''
             QPushButton#primary[state="{name}"]:disabled {{ background: {appearance.color}; color: white; border-color: {appearance.color}; }}
         '''
+
+
+def install_style(app):
+    app.setStyle('Fusion')
+    app.setStyleSheet(STYLE)
+    # Qt caches stylesheet palettes for polished widgets. Reapply it after
+    # Qt has delivered the new system palette to the open windows.
+    app.paletteChanged.connect(lambda _palette: app.setStyleSheet(STYLE), Qt.QueuedConnection)

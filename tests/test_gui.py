@@ -60,9 +60,11 @@ def gui(tmp_path,monkeypatch):
     monkeypatch.setattr(QMessageBox,'open',lambda self:None)
     model.Store().save([model.Profile(name='办公网络',host='vpn.example.test',username='demo'),
                         model.Profile(name='测试网络',host='test.example.test',username='demo')])
-    app=QApplication.instance() or QApplication([])
+    app=QApplication.instance()
+    if app is None:
+        app=QApplication([])
+        ui.install_style(app)
     monkeypatch.setattr(app,'quit',Mock())
-    app.setStyle('Fusion');app.setStyleSheet(ui.STYLE)
     window=ui.Window();window.show();app.processEvents()
     monkeypatch.setattr(window,'confirm_connection_action',lambda exiting:True)
     for profile in window.profiles:window.memory_passwords[profile.id]='synthetic'
@@ -79,6 +81,37 @@ def establish(window):
     session.emit('connected',vip='192.0.2.2',interface='MultiVPN-demo',routes=['192.0.2.0/24'])
     session.emit('state',state='connected',text='系统内网路由已就绪')
     return session
+
+
+def test_open_windows_follow_palette_changes(gui):
+    from PySide6.QtGui import QColor, QPalette
+    from multi_vpn.app import ProfileDialog
+
+    app, window = gui
+    dialog = ProfileDialog(window.current(), '', window)
+    dialog.show()
+    previous = app.palette()
+    try:
+        for background, foreground in (
+            ('#fafafa', '#202020'), ('#202020', '#fafafa'), ('#fafafa', '#202020')
+        ):
+            palette = QPalette(previous)
+            for role in (QPalette.Window, QPalette.Base, QPalette.Button):
+                palette.setColor(role, QColor(background))
+            for role in (QPalette.WindowText, QPalette.Text, QPalette.ButtonText):
+                palette.setColor(role, QColor(foreground))
+            app.setPalette(palette)
+            app.processEvents()
+
+            assert window.grab().toImage().pixelColor(2, 2) == QColor(background)
+            assert window.status.palette().color(QPalette.WindowText) == QColor(foreground)
+            assert dialog.name.grab().toImage().pixelColor(dialog.name.width() - 8, 8) == QColor(background)
+            assert dialog.name.palette().color(QPalette.Text) == QColor(foreground)
+            assert window.logs.viewport().grab().toImage().pixelColor(2, 2) == QColor(background)
+    finally:
+        dialog.close()
+        app.setPalette(previous)
+        app.processEvents()
 
 
 def test_update_does_not_install_until_confirmed_and_vpn_is_cleaned(gui, tmp_path, monkeypatch):
