@@ -1,5 +1,10 @@
 # Changes
 
+## 0.2.6
+
+- Support SMS verification on legacy gateways before requesting the tunnel IP.
+- Follow the system light or dark appearance.
+
 ## 0.2.5
 
 - Increase the legacy UDP socket receive buffer to absorb packet bursts.
