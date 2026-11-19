@@ -136,12 +136,21 @@ class Session(threading.Thread):
             request=p.legacy_auth_request(self.profile.host,self.profile.username,self.password,mac) if protocol=='legacy' else auth_v1(f'{self.profile.host}:{self.profile.port}',self.profile.username,self.password,mac)
             self.password='';auth.sendall(request);del request
             if protocol=='legacy':
-                info=p.legacy_auth_response(auth);uid=struct.unpack_from('!I',info,40)[0]
+                try:
+                    info=p.legacy_auth_response(auth)
+                except p.LegacySmsRequired as challenge:
+                    auth.close()
+                    code=self.wait_for_sms()
+                    request=p.legacy_sms_request(self.profile.host,code,challenge.challenge);del code
+                    auth=self.connect_tls()
+                    auth.sendall(request);del request
+                    info=p.legacy_auth_response(auth,allow_sms_challenge=False)
+                    self.emit('diagnostic', message='旧版短信验证通过')
+                uid=struct.unpack_from('!I',info,40)[0]
             else:
                 try:token=p.parse_auth(read_frame(auth.recv))
                 except p.SmsRequired:
-                    self.emit('state',state='sms',text='等待短信验证码');self.emit('sms')
-                    code=self.wait('sms');request=p.sms_packet(code);del code
+                    code=self.wait_for_sms();request=p.sms_packet(code);del code
                     auth.sendall(request);del request
                     token=p.parse_auth(read_frame(auth.recv))
                 uid=0
@@ -203,6 +212,11 @@ class Session(threading.Thread):
                 except Exception:pass
             self.emit('state',state='disconnected',text='已断开');p.EVENT_SINK.reset(sink)
 
+    def wait_for_sms(self):
+        self.emit('state',state='sms',text='等待短信验证码')
+        self.emit('sms')
+        return self.wait('sms')
+
     def open_legacy_tunnel(self, control, uid):
         cfg = self.legacy_config(control, uid)
         if not self.profile.legacy_udp or control.family != socket.AF_INET:
@@ -223,7 +237,10 @@ class Session(threading.Thread):
             return self.legacy_config(control, uid), control, control, None
 
     def legacy_config(self, control, uid):
-        payload = legacy_exchange(control, uid, 3)
+        try:
+            payload = legacy_exchange(control, uid, 3)
+        except TimeoutError as exc:
+            raise TimeoutError('旧版网关未回应内网 IP 分配请求') from exc
         return p.parse_legacy_config(p.legacy_frame(3, payload, uid))
 
     def open_legacy_udp(self, control, uid, vip):

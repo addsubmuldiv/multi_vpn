@@ -14,6 +14,12 @@ EVENT_SINK=ContextVar('vpn_event_sink',default=None)
 class ProtocolError(Exception): pass
 class SmsRequired(ProtocolError): pass
 
+
+class LegacySmsRequired(SmsRequired):
+    def __init__(self, challenge):
+        super().__init__('旧版网关要求短信验证')
+        self.challenge = challenge
+
 def event(name, **fields):
     sink=EVENT_SINK.get()
     if sink: sink(name, fields)
@@ -81,9 +87,12 @@ def parse_auth(frame):
 def summarize_config(cfg):
     return {k:v for k,v in cfg.items() if k not in {'tlvs','key_material','dns_domain_raw','raw'}}
 
-def sms_packet(code):
+def validate_sms_code(code):
     if not code.isascii() or not code.isdigit() or not 4<=len(code)<=10:
         raise ProtocolError('Expected a 4..10 digit SMS verification code')
+
+def sms_packet(code):
+    validate_sms_code(code)
     # FUN_0040fa40: command 2, 33-byte body, method 1 + code[32].
     return encode_frame(2,b'\x01'+code.encode('ascii').ljust(32,b'\0'))
 
@@ -132,7 +141,34 @@ def legacy_auth_request(host,username,password,mac):
             'User-Agent: Mozilla/4.0 (compatible; MSIE 6.0; NT 5.1; SV1; .NET CLR 2.0.50727)'
             'OS=Windows64\r\nHost: '+host+'\r\n\r\n').encode('ascii')
 
-def legacy_auth_response(tls):
+
+def legacy_sms_request(host, code, challenge):
+    validate_sms_code(code)
+    vtid, session_id = struct.unpack_from('!ii', challenge, 4)
+    user_id = struct.unpack_from('!i', challenge, 40)[0]
+    cookie = challenge[84:148].split(b'\0', 1)[0]
+    if any(byte < 33 or byte > 126 or byte == ord(';') for byte in cookie):
+        raise ProtocolError('旧版短信验证会话信息无效')
+    query = f'VTID={vtid}'
+    if session_id:
+        query += f'&UserID={user_id}&SessionID={session_id}'
+        cookie_header = b'SVN_SessionID=' + cookie
+    else:
+        if not cookie:
+            raise ProtocolError('旧版网关未返回短信验证会话')
+        cookie_header = f'UserID={user_id}&SVN_SessionID='.encode('ascii') + cookie + b';'
+    request = (
+        f'GET /checkrdsverificationcode.html?{query}&SMSCode={code}&SelectLanguage=2& HTTP/1.1\r\n'
+        'Accept: image/gif, image/x-xbitmap, image/jpeg, image/pjpeg, application/msword, '
+        'application/vnd.ms-excel, application/vnd.ms-powerpoint, */*\r\n'
+        'Accept-Language: zh-cn\r\nAccept-Encoding: gzip, deflate\r\n'
+        'User-Agent: Mozilla/4.0 (compatible; MSIE 6.0; NT 5.1; SV1; .NET CLR 2.0.50727)'
+        f'OS=Windows64\r\nHost: {host}\r\nCookie: '
+    )
+    return request.encode('ascii') + cookie_header + b'\r\n\r\n'
+
+
+def legacy_auth_response(tls, *, allow_sms_challenge=True):
     if exact(tls,4)!=b'\xf0'*4:raise ProtocolError('Unrecognized legacy auth reply')
     data=bytearray(exact(tls,60))
     tls.settimeout(0.5)
@@ -144,10 +180,16 @@ def legacy_auth_response(tls):
     except (TimeoutError,ssl.SSLError):pass
     finally:tls.settimeout(15)
     status=struct.unpack_from('!i',data)[0]
-    event('legacy_auth_response',accepted=status>=0,rejection_code=status if status<0 else None,payload_bytes=len(data),
+    sms_required=struct.unpack_from('!H',data,0x32)[0]==1
+    event('legacy_auth_response',accepted=status>=0 and not sms_required,
+          sms_required=sms_required,rejection_code=status if status<0 else None,payload_bytes=len(data),
           gateway_hostid=struct.unpack_from('!I',data,0x14)[0],
           user_hostid=struct.unpack_from('!I',data,0x18)[0],
           endpoint_check=struct.unpack_from('!I',data,0x1c)[0])
+    if sms_required:
+        if allow_sms_challenge and (status>=0 or status==-100):
+            raise LegacySmsRequired(bytes(data))
+        raise ProtocolError('旧版网关未确认短信验证成功')
     if status<0:raise ProtocolError('Legacy authentication did not finish successfully; not retried')
     if struct.unpack_from('!I',data,0x18)[0]==1:
         raise ProtocolError('Gateway requests host-ID authentication; unsupported')
