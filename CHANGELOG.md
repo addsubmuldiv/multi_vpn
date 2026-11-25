@@ -1,5 +1,10 @@
 # Changes
 
+## 0.2.7
+
+- Keep the VPN status connected when outbound traffic is followed by 30 seconds
+  without inbound data. Record the gap in the connection log.
+
 ## 0.2.6
 
 - Support SMS verification on legacy gateways before requesting the tunnel IP.
