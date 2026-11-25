@@ -122,7 +122,7 @@ def test_transport_enables_keepalive_without_requiring_optional_platform_options
     assert (socket.SOL_SOCKET,socket.SO_KEEPALIVE,1) in transport.options
 
 
-def test_control_heartbeats_do_not_hide_stalled_data_channel(monkeypatch):
+def test_no_inbound_data_is_logged_without_changing_connection_state(monkeypatch):
     from multi_vpn.session import Session
     from multi_vpn.model import Profile,RouteRegistry
     from multi_vpn.wire import icmp_echo
@@ -150,10 +150,11 @@ def test_control_heartbeats_do_not_hide_stalled_data_channel(monkeypatch):
     monkeypatch.setattr(implementation.time,'monotonic',clock)
     monkeypatch.setattr(implementation.select,'select',select_ready)
     session.forward(control,data,'v1',0,bytes(32))
-    states=[fields['state'] for event,fields in events if event=='state']
-    assert states==['degraded','connected']
-    degraded=[fields for event,fields in events if event=='traffic' and fields['last_receive_age']>=30 and fields['last_receive_age']<60]
-    assert degraded and any(fields['last_gateway_age']<5 for fields in degraded)
+    assert not [fields for event,fields in events if event=='state']
+    receive_events=[event for event,_ in events if event in {'receive_idle','receive_resumed'}]
+    assert receive_events==['receive_idle','receive_resumed']
+    no_inbound=[fields for event,fields in events if event=='traffic' and 30<=fields['last_receive_age']<60]
+    assert no_inbound and any(fields['last_gateway_age']<5 for fields in no_inbound)
 
 
 def test_many_queue_cycles_release_packet_history():

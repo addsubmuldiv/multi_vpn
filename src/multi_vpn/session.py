@@ -4,7 +4,7 @@ from concurrent.futures import ThreadPoolExecutor
 from . import protocol as p
 from .wire import encode_frame,read_frame,parse_vip,auth_v1,validate_ipv4,data_frame
 from .platforms import create_adapter,validate_mtu
-from .transport import TLSWriter,ReceiveQueue,ReceiveHealth,TunnelReader
+from .transport import TLSWriter,ReceiveQueue,ReceiveActivity,TunnelReader
 from .operations import Cancelled,cancellation,check_cancelled,resolve
 from .legacy_udp import LegacyUdp
 
@@ -307,7 +307,7 @@ class Session(threading.Thread):
             return sock is not udp_sock and sock.pending()
         receive_wants_write=set()
         heartbeat=time.monotonic()+8;stats=time.monotonic();counter=0
-        pending=ReceiveQueue();health=ReceiveHealth(stats);received=0
+        pending=ReceiveQueue();receive_activity=ReceiveActivity(stats);received=0
         last_gateway=stats;last_udp=stats;last_control=None
         udp_invalid=udp_acks=0
         last_data=last_control_ack=last_data_ack=None
@@ -371,7 +371,7 @@ class Session(threading.Thread):
                 if packet is None:break
                 packets+=1
                 if not packet or packet[0]>>4!=4:continue
-                health.sent(time.monotonic())
+                receive_activity.sent(time.monotonic())
                 if udp:frame=udp.encode(packet)
                 elif protocol=='v1':frame=data_frame(packet)
                 else:
@@ -427,7 +427,7 @@ class Session(threading.Thread):
                             repair_until=None
                             self.emit('diagnostic',message='UDP 数据通道已重新建立')
                         if packet is not None:
-                            pending.enqueue(packet);received+=len(packet);health.received(last_udp)
+                            pending.enqueue(packet);received+=len(packet);receive_activity.received(last_udp)
                         else:udp_acks+=1
                         continue
                     if not chunk:
@@ -440,7 +440,7 @@ class Session(threading.Thread):
                     for cmd,payload in readers[sock].feed(chunk):
                         if cmd==(2 if protocol=='legacy' else 0x66) and not udp:
                             packet=payload if protocol=='legacy' else payload[8:]
-                            validate_ipv4(packet);pending.enqueue(packet);received+=len(packet);health.received(time.monotonic())
+                            validate_ipv4(packet);pending.enqueue(packet);received+=len(packet);receive_activity.received(time.monotonic())
                             if fallback_pending:
                                 self.emit('diagnostic',message='恢复后的 TLS 通道已收到内网数据')
                                 fallback_pending=False
@@ -486,8 +486,11 @@ class Session(threading.Thread):
                     self.emit('transport_changed',transport='tcp',message='UDP 通道失效，当前会话切回 TLS',error_type=udp_failure)
             if repair_until is not None and now>=next_probe:
                 writers[data].enqueue(udp.probe());next_probe=now+2
-            state=health.check(now)
-            if state:self.emit('state',state=state,text='已发出内网数据，但超过 30 秒未收到内网数据，请检查链路或目标服务' if state=='degraded' else '已恢复接收内网数据 · 系统内网路由已就绪')
+            receive_event=receive_activity.check(now)
+            if receive_event=='receive_idle':
+                self.emit(receive_event,message='检测到发往内网的数据，随后 30 秒未收到内网数据')
+            elif receive_event=='receive_resumed':
+                self.emit(receive_event,message='已收到内网数据')
             if now>=heartbeat:
                 counter+=1
                 writers[control].enqueue(p.legacy_frame(7,user_id=uid) if protocol=='legacy' else encode_frame(6,token+struct.pack('!I',counter)))
@@ -500,7 +503,7 @@ class Session(threading.Thread):
                     rx_backpressure=pending.blocked,
                     tx_backpressure=closed_backpressure+sum(writer.blocked for writer in writers.values()),
                     send_queue=sum(writer.size for writer in writers.values()),
-                    last_receive_age=round(now-health.last_receive,3),
+                    last_receive_age=round(now-receive_activity.last_receive,3),
                     last_gateway_age=round(now-last_gateway,3),
                     rx_queue_age=round(pending.age,3),
                     tx_queue_age=round(max(writer.age for writer in writers.values()),3),

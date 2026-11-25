@@ -44,7 +44,7 @@ class EventLog:
         if isinstance(run_id,str) and len(run_id)==32 and all(character in '0123456789abcdef' for character in run_id):row['run_id']=run_id
         for name in self.fields:
             value=data.get(name)
-            if isinstance(value,(int,float)) or name=='state' and value in {'connecting','sms','connected','degraded','disconnected'} or name=='protocol' and value in {'legacy','v1'}:
+            if isinstance(value,(int,float)) or name=='state' and value in {'connecting','sms','connected','disconnected'} or name=='protocol' and value in {'legacy','v1'}:
                 row[name]=value
             elif name=='transport' and value in ('udp','tcp'):row[name]=value
             elif name=='error_type' and isinstance(value,str) and value.isidentifier():row[name]=value

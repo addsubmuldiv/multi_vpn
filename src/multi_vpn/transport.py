@@ -65,17 +65,20 @@ class ReceiveQueue:
             self.queue.popleft();self.timestamps.popleft();self.size-=len(packet);delivered+=len(packet)
         return delivered
 
-class ReceiveHealth:
+class ReceiveActivity:
     def __init__(self,now,timeout=30):
-        self.last_receive=now;self.waiting_since=None;self.timeout=timeout;self.degraded=False
+        self.last_receive=now;self.waiting_since=None;self.timeout=timeout;self.idle_reported=False
     def sent(self,now):
         if self.waiting_since is None:self.waiting_since=now
     def received(self,now):
         self.last_receive=now;self.waiting_since=None
     def check(self,now):
-        if self.waiting_since is not None and now-self.waiting_since>=self.timeout:
-            if not self.degraded:self.degraded=True;return 'degraded'
-        elif self.degraded:self.degraded=False;return 'connected'
+        if self.waiting_since is None and self.idle_reported:
+            self.idle_reported=False
+            return 'receive_resumed'
+        if not self.idle_reported and self.waiting_since is not None and now-self.waiting_since>=self.timeout:
+            self.idle_reported=True
+            return 'receive_idle'
         return None
 
 class TLSWriter:

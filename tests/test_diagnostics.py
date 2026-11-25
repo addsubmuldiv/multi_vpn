@@ -1,6 +1,6 @@
 import json
 from multi_vpn.diagnostics import EventLog
-from multi_vpn.transport import ReceiveQueue,ReceiveHealth
+from multi_vpn.transport import ReceiveQueue,ReceiveActivity
 
 
 def test_log_persists_only_safe_fields_and_rotates(tmp_path):
@@ -49,16 +49,16 @@ def test_receive_queue_handles_nonblocking_adapter_and_is_bounded():
     with pytest.raises(BufferError):pending.enqueue(b'e')
 
 
-def test_no_response_warning_is_not_an_idle_disconnect():
-    health=ReceiveHealth(now=0,timeout=30)
-    assert health.check(100) is None
-    health.sent(100)
-    assert health.check(129) is None
-    assert health.check(131)=='degraded'
-    assert health.check(200) is None
-    health.received(201)
-    assert health.check(201)=='connected'
-    assert health.check(400) is None
+def test_receive_activity_reports_one_event_per_gap_after_sending():
+    activity=ReceiveActivity(now=0,timeout=30)
+    assert activity.check(100) is None
+    activity.sent(100)
+    assert activity.check(129) is None
+    assert activity.check(130)=='receive_idle'
+    assert activity.check(200) is None
+    activity.received(201)
+    assert activity.check(201)=='receive_resumed'
+    assert activity.check(400) is None
 
 
 def test_forward_retries_adapter_and_counts_only_delivered_packets(monkeypatch):

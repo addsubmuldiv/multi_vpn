@@ -231,7 +231,7 @@ def test_error_remains_after_cleanup_and_retry_ignores_old_events(gui,already_co
     assert '上一次' not in window.logs.toPlainText()
 
 
-def test_multi_connection_summary_and_warning_recovery_keep_elapsed_time(gui,monkeypatch):
+def test_receive_diagnostics_preserve_connected_status_and_elapsed_time(gui,monkeypatch):
     import multi_vpn.app as ui
     clock=[100.0];monkeypatch.setattr(ui.time,'monotonic',lambda:clock[0])
     app,window=gui
@@ -242,21 +242,39 @@ def test_multi_connection_summary_and_warning_recovery_keep_elapsed_time(gui,mon
     assert '已连接 1 条' in window.windowTitle()
     second=establish(window)
     healthy_icon=window.windowIcon().cacheKey()
-    first.emit('state',state='degraded',text='超过 30 秒未收到内网数据，请检查目标服务')
-    assert window.summary.text()=='已连接 2 条 · 1 条链路异常'
-    assert window.windowIcon().cacheKey()!=healthy_icon
-    assert window.connect_button.text()=='已连接'  # Selected connection is healthy.
+    first.emit('receive_idle',message='检测到发往内网的数据，随后 30 秒未收到内网数据')
+    assert window.summary.text()=='已连接 2 条'
+    assert window.windowIcon().cacheKey()==healthy_icon
+    assert window.list.item(0).text()=='办公网络  ·  已连接'
     window.list.setCurrentRow(0)
-    assert window.connect_button.text()=='链路异常' and window.disconnect_button.isEnabled()
+    assert window.status.text()=='已连接' and window.status_detail.text()=='系统内网路由已就绪'
+    assert window.connect_button.text()=='已连接' and window.disconnect_button.isEnabled()
+    assert '30 秒未收到内网数据' in window.logs.toPlainText()
     clock[0]=165.0
-    first.emit('state',state='connected',text='已恢复接收内网数据')
+    first.emit('receive_resumed',message='已收到内网数据')
     assert window.duration.text()=='连接时长 00:01:05'
+    assert '已收到内网数据' in window.logs.toPlainText()
     assert window.summary.text()=='已连接 2 条'
     assert window.windowIcon().cacheKey()==healthy_icon
     first.finish()
     assert window.summary.text()=='已连接 1 条'
     second.finish()
     assert window.summary.text()=='未连接'
+
+
+def test_connection_interrupted_after_receive_idle_still_updates_summary(gui):
+    _,window=gui
+    first=establish(window)
+    window.list.setCurrentRow(1)
+    establish(window)
+    connected_icon=window.windowIcon().cacheKey()
+    first.emit('receive_idle',message='检测到发往内网的数据，随后 30 秒未收到内网数据')
+    first.emit('error',message='网关关闭连接')
+    first.finish()
+    assert window.summary.text()=='已连接 1 条 · 1 条连接失败'
+    assert window.tray.toolTip()=='Multi VPN\n已连接 1 条 · 1 条连接失败'
+    assert window.windowIcon().cacheKey()!=connected_icon
+    assert window.list.item(0).text()=='办公网络  ·  连接中断'
 
 
 @pytest.mark.parametrize('kind',['sms','certificate'])
@@ -309,10 +327,10 @@ def test_close_hides_to_tray_without_stopping_connections_and_hints_once(gui):
     assert not window.event_log.closed and window.timer.isActive()
     app.quit.assert_not_called()
     assert len(window.tray.notifications)==1
-    session.emit('state',state='degraded',text='暂未收到回包')
-    assert '1 条链路异常' in window.tray.toolTip()
+    session.emit('receive_idle',message='检测到发往内网的数据，随后 30 秒未收到内网数据')
+    assert window.tray.toolTip()=='Multi VPN\n已连接 1 条'
     window.tray.activated.emit(window.tray.ActivationReason.Trigger)
-    assert window.isVisible() and window.connect_button.text()=='链路异常'
+    assert window.isVisible() and window.connect_button.text()=='已连接'
     window.close()
     assert len(window.tray.notifications)==1
 

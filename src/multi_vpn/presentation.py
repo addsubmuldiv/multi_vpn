@@ -19,7 +19,7 @@ STATES = {
     'certificate': Appearance('等待证书确认', '等待验证…', '#a16207', '#fffbeb', '!'),
     'sms': Appearance('等待短信验证', '等待验证…', '#a16207', '#fffbeb', '!'),
     'connected': Appearance('已连接', '已连接', '#15803d', '#f0fdf4', '✓'),
-    'degraded': Appearance('链路异常', '链路异常', '#a16207', '#fffbeb', '!'),
+    'partial_failure': Appearance('部分连接失败', '重新连接', '#a16207', '#fffbeb', '!'),
     'disconnecting': Appearance('断开中…', '断开中…', '#64748b', '#f1f5f9', '…'),
     'failed': Appearance('连接失败', '重新连接', '#b91c1c', '#fef2f2', '×'),
     'interrupted': Appearance('连接中断', '重新连接', '#b91c1c', '#fef2f2', '×'),
@@ -100,7 +100,7 @@ for name, appearance in STATES.items():
         QWidget#statusPanel[state="{name}"] {{ border-color: {appearance.color}; }}
         QLabel#summary[state="{name}"] {{ color: {appearance.color}; background: {appearance.background}; }}
     '''
-    if name in {'connected', 'degraded', 'connecting', 'sms', 'certificate'}:
+    if name in {'connected', 'connecting', 'sms', 'certificate'}:
         STYLE += f'''
             QPushButton#primary[state="{name}"]:disabled {{ background: {appearance.color}; color: white; border-color: {appearance.color}; }}
         '''

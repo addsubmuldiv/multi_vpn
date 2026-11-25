@@ -226,14 +226,11 @@ class Window(QMainWindow):
         return self.states.get(id,('disconnected','尚未建立 VPN 连接'))
     def refresh_summary(self):
         states=[self.state(profile.id)[0] for profile in self.profiles]
-        connected=sum(state in {'connected','degraded'} for state in states)
-        warnings=states.count('degraded')
+        connected=states.count('connected')
         failures=sum(s in {'failed','interrupted'} for s in states)
-        if warnings or failures:
-            state='degraded' if connected else 'failed'
-            text=f'已连接 {connected} 条' if connected else '未连接'
-            if warnings:text+=f' · {warnings} 条链路异常'
-            if failures:text+=f' · {failures} 条连接失败'
+        if failures:
+            state='partial_failure' if connected else 'failed'
+            text=(f'已连接 {connected} 条' if connected else '未连接')+f' · {failures} 条连接失败'
         elif connected:state='connected';text=f'已连接 {connected} 条'
         elif any(s in {'connecting','certificate','sms'} for s in states):state='connecting';text='正在建立连接'
         elif 'disconnecting' in states:state='disconnecting';text='正在断开连接'
@@ -256,7 +253,7 @@ class Window(QMainWindow):
         self.connect_button.setIcon(self.state_icons[state] if state!='disconnected' else QIcon())
         self.connect_button.setEnabled(bool(p) and not active and state in {'disconnected','failed','interrupted'})
         self.disconnect_button.setText('取消连接' if state in {'connecting','certificate','sms'} else '断开')
-        self.disconnect_button.setEnabled(bool(active) and state in {'connecting','certificate','sms','connected','degraded'})
+        self.disconnect_button.setEnabled(bool(active) and state in {'connecting','certificate','sms','connected'})
         for i,profile in enumerate(self.profiles):
             row_state,row_detail=self.state(profile.id);item=self.list.item(i)
             item.setText(profile.name+'  ·  '+STATES[row_state].title)
@@ -266,7 +263,7 @@ class Window(QMainWindow):
         self.status_detail.setText(detail)
         set_state(self.status_panel,state)
         self.progress.setVisible(state in {'connecting','disconnecting'})
-        self.duration.setVisible(bool(p) and state in {'connected','degraded'})
+        self.duration.setVisible(bool(p) and state=='connected')
         if p and p.id in self.connected_since:
             elapsed=max(0,int(time.monotonic()-self.connected_since[p.id]));hours,remainder=divmod(elapsed,3600);minutes,seconds=divmod(remainder,60)
             self.duration.setText(f'连接时长 {hours:02}:{minutes:02}:{seconds:02}')
@@ -284,7 +281,7 @@ class Window(QMainWindow):
         if self.logs.toPlainText()!=logs:
             self.logs.setPlainText(logs)
             cursor=self.logs.textCursor();cursor.movePosition(cursor.MoveOperation.End);self.logs.setTextCursor(cursor)
-        s=self.sessions.get(p.id) if state in {'connected','degraded','disconnecting'} else None
+        s=self.sessions.get(p.id) if state in {'connected','disconnecting'} else None
         self.traffic.setText(f'发送 {s.tx:,} B / 接收 {s.rx:,} B' if s else '发送 0 B / 接收 0 B')
         if s and s.metrics:
             self.traffic.setText(self.traffic.text()+f"\n发送排队 {s.metrics.get('send_queue',0):,} B / 接收排队 {s.metrics.get('pending_rx',0):,} B / 网卡重试 {s.metrics.get('rx_backpressure',0):,} 次 / 日志未保存 {s.metrics.get('log_dropped',0):,} 条")
